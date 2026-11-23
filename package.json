@@ -1,0 +1,39 @@
+{
+  "name": "school-map-3d-maker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "학교 3D 안내도를 만드는 Windows 데스크톱 앱",
+  "author": "school-map-3d-maker",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win portable"
+  },
+  "build": {
+    "appId": "com.schoolmap3d.maker",
+    "productName": "학교 3D 안내도 제작기",
+    "executableName": "School3DMapMaker",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**",
+      "maker.html",
+      "사용안내.html",
+      "vendor/**"
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ],
+      "icon": "build/icon.png",
+      "artifactName": "School3DMapMaker-${version}-portable.${ext}"
+    }
+  },
+  "devDependencies": {
+    "electron": "45.4.1",
+    "electron-builder": "26.18.0",
+    "three": "0.147.0"
+  }
+}
