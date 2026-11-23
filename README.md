@@ -38,3 +38,7 @@ npm run dist
 | `electron/main.js` | 데스크톱 앱 실행 코드 |
 | `vendor/` | three.js r147 (MIT 라이선스) |
 | `index.html`, `admin.html`, `css/`, `js/`, `data/` | 사진 기반 안내도 초기 버전 |
+
+## 라이선스
+
+이 프로젝트는 [MIT 라이선스](LICENSE)로 배포됩니다. 포함된 three.js의 라이선스는 [vendor/three-LICENSE.txt](vendor/three-LICENSE.txt)에 있습니다.

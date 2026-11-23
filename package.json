@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "description": "학교 3D 안내도를 만드는 Windows 데스크톱 앱",
-  "author": "school-map-3d-maker",
+  "author": "goodssam012",
+  "license": "MIT",
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
@@ -19,6 +20,7 @@
     },
     "files": [
       "electron/**",
+      "LICENSE",
       "maker.html",
       "사용안내.html",
       "vendor/**"
