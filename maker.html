@@ -109,6 +109,10 @@ button.danger { color: var(--danger); }
 .photo { display: block; width: 100%; max-height: 190px; object-fit: cover; border-radius: 6px; margin: 6px 0 10px; }
 .check { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 14px; }
 .wide { width: 100%; margin-bottom: 10px; }
+.plan-off { position: absolute; pointer-events: none; background: repeating-linear-gradient(45deg, #c9c6bc, #c9c6bc 3px, #dedbd2 3px, #dedbd2 6px); }
+.door-shape { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.draw-bar { position: absolute; z-index: 12; top: 12px; left: 12px; right: 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 10px; border-radius: var(--radius); background: #fff; box-shadow: 0 4px 14px rgb(0 0 0 / .22); }
+.draw-bar span { flex: 1 1 220px; font-size: 14px; line-height: 1.4; }
 .toast { position: fixed; z-index: 40; left: 50%; bottom: 24px; transform: translateX(-50%); max-width: calc(100vw - 32px); padding: 10px 16px; border-radius: var(--radius); background: var(--ink); color: #fff; }
 .fatal { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; background: var(--bg); }
 @media (max-width: 900px) {
@@ -234,6 +238,12 @@ button.danger { color: var(--danger); }
         <canvas id="scene"></canvas>
         <div class="labels" id="labels"></div>
         <div class="hint" id="hint" hidden></div>
+        <div class="draw-bar" id="drawBar" hidden>
+          <span id="drawHint"></span>
+          <button id="drawUndo" type="button">되돌리기</button>
+          <button id="drawDone" type="button" class="primary">완료</button>
+          <button id="drawCancel" type="button">취소</button>
+        </div>
         <div class="finder" id="finder" hidden>
           <input id="findInput" type="search" placeholder="교실, 출입구 이름으로 찾기" aria-label="교실이나 출입구 이름으로 위치 찾기" autocomplete="off">
           <div class="find-results" id="findResults" hidden></div>
@@ -281,24 +291,117 @@ button.danger { color: var(--danger); }
     if (/실$|강당|체육관/.test(name)) return 'lab';
     return 'etc';
   }
-  function gridFor(w, d) {
+  const maskCache = new WeakMap();
+  function polyArea(pts) {
+    let a = 0;
+    pts.forEach((p, i) => { const q = pts[(i + 1) % pts.length]; a += p[0] * q[1] - q[0] * p[1]; });
+    return a / 2;
+  }
+  function distToSegment(p, a, b) {
+    const dx = b[0] - a[0], dz = b[1] - a[1], l = dx * dx + dz * dz;
+    const t = l ? clamp(((p[0] - a[0]) * dx + (p[1] - a[1]) * dz) / l, 0, 1) : 0;
+    return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dz);
+  }
+  function pointInPoly(p, poly) {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const a = poly[i], b = poly[j];
+      if ((a[1] > p[1]) !== (b[1] > p[1]) && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]) inside = !inside;
+    }
+    return inside;
+  }
+  function strictlyInside(p, poly) {
+    for (let i = 0; i < poly.length; i++) if (distToSegment(p, poly[i], poly[(i + 1) % poly.length]) < .02) return false;
+    return pointInPoly(p, poly);
+  }
+  function segmentsCross(a, b, c, d) {
+    const o = (p, q, r) => (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+    return o(a, b, c) * o(a, b, d) < -1e-6 && o(c, d, a) * o(c, d, b) < -1e-6;
+  }
+  function polySelfCrosses(pts) {
+    for (let i = 0; i < pts.length; i++) {
+      for (let j = i + 2; j < pts.length; j++) {
+        if (i === 0 && j === pts.length - 1) continue;
+        if (segmentsCross(pts[i], pts[(i + 1) % pts.length], pts[j], pts[(j + 1) % pts.length])) return true;
+      }
+    }
+    return false;
+  }
+  function polysIntersect(a, b) {
+    for (let i = 0; i < a.length; i++) {
+      const p = a[i], q = a[(i + 1) % a.length], mid = [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
+      if (strictlyInside(p, b) || strictlyInside(mid, b)) return true;
+      for (let j = 0; j < b.length; j++) if (segmentsCross(p, q, b[j], b[(j + 1) % b.length])) return true;
+    }
+    for (let i = 0; i < b.length; i++) {
+      const p = b[i], q = b[(i + 1) % b.length], mid = [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
+      if (strictlyInside(p, a) || strictlyInside(mid, a)) return true;
+    }
+    return false;
+  }
+  function fromWorldPoints(raw) {
+    let pts = raw.filter((p, i) => {
+      const q = raw[(i + raw.length - 1) % raw.length];
+      return Math.hypot(p[0] - q[0], p[1] - q[1]) > .01;
+    });
+    pts = pts.filter((p, i) => {
+      const a = pts[(i + pts.length - 1) % pts.length], b = pts[(i + 1) % pts.length];
+      return Math.abs((p[0] - a[0]) * (b[1] - a[1]) - (p[1] - a[1]) * (b[0] - a[0])) > 1e-6;
+    });
+    if (polyArea(pts) > 0) pts = pts.slice().reverse();
+    const xs = pts.map((p) => p[0]), zs = pts.map((p) => p[1]);
+    const x0 = Math.min(...xs), x1 = Math.max(...xs), z0 = Math.min(...zs), z1 = Math.max(...zs);
+    const x = (x0 + x1) / 2, z = (z0 + z1) / 2;
+    const isRect = pts.length === 4 && pts.every((p) => (p[0] === x0 || p[0] === x1) && (p[1] === z0 || p[1] === z1));
+    return { x, z, w: x1 - x0, d: z1 - z0, outline: isRect ? null : pts.map((p) => [p[0] - x, p[1] - z]) };
+  }
+  function worldPoly(it, x, z, rot) {
+    const local = it.outline || [[-it.w / 2, -it.d / 2], [it.w / 2, -it.d / 2], [it.w / 2, it.d / 2], [-it.w / 2, it.d / 2]];
+    const th = -(rot || 0) * Math.PI / 2, c = Math.round(Math.cos(th)), n = Math.round(Math.sin(th));
+    return local.map((p) => [x + p[0] * c + p[1] * n, z - p[0] * n + p[1] * c]);
+  }
+  function gridFor(w, d, outlined) {
+    if (outlined) return { cols: clamp(Math.round(w / 4), 2, 24), rows: clamp(Math.round(d / 4), 2, 16) };
     return { cols: clamp(Math.round(w / 4), 2, 24), rows: clamp(Math.round((d - CORR) / 4), 1, 10) };
   }
+  function cellMask(it, g) {
+    const key = `${it.w}|${it.d}|${g.cols}|${g.rows}`, hit = maskCache.get(it.outline);
+    if (hit && hit.key === key) return hit.mask;
+    const mask = [];
+    for (let r = 0; r < g.rows; r++) {
+      mask[r] = [];
+      for (let c = 0; c < g.cols; c++) {
+        const x0 = -it.w / 2 + c * g.cw + .05, x1 = -it.w / 2 + (c + 1) * g.cw - .05;
+        const z0 = -it.d / 2 + r * g.ch + .05, z1 = -it.d / 2 + (r + 1) * g.ch - .05;
+        const mx = (x0 + x1) / 2, mz = (z0 + z1) / 2;
+        mask[r][c] = [[x0, z0], [mx, z0], [x1, z0], [x0, mz], [mx, mz], [x1, mz], [x0, z1], [mx, z1], [x1, z1]].every((p) => pointInPoly(p, it.outline));
+      }
+    }
+    maskCache.set(it.outline, { key, mask });
+    return mask;
+  }
   function gridOf(it) {
-    const g = gridFor(it.w, it.d);
+    const g = gridFor(it.w, it.d, !!it.outline);
     g.cw = it.w / g.cols;
-    g.ch = (it.d - CORR) / g.rows;
+    g.ch = (it.outline ? it.d : it.d - CORR) / g.rows;
+    if (it.outline) g.mask = cellMask(it, g);
     return g;
+  }
+  function cellInMask(cell, g) {
+    if (!g.mask) return true;
+    for (let r = cell.r; r < cell.r + cell.rs; r++) for (let c = cell.c; c < cell.c + cell.cs; c++) if (!g.mask[r] || !g.mask[r][c]) return false;
+    return true;
   }
   const cellsOverlap = (a, b) => a.c < b.c + b.cs && b.c < a.c + a.cs && a.r < b.r + b.rs && b.r < a.r + a.rs;
   const insideGrid = (cell, g) => cell.c >= 0 && cell.r >= 0 && cell.cs >= 1 && cell.rs >= 1 && cell.c + cell.cs <= g.cols && cell.r + cell.rs <= g.rows;
   function fitsCell(it, f, cell, exceptId) {
-    return insideGrid(cell, gridFor(it.w, it.d)) && !((it.rooms && it.rooms[f]) || []).some((o) => o.id !== exceptId && o.cell && cellsOverlap(o.cell, cell));
+    const g = gridOf(it);
+    return insideGrid(cell, g) && cellInMask(cell, g) && !((it.rooms && it.rooms[f]) || []).some((o) => o.id !== exceptId && o.cell && cellsOverlap(o.cell, cell));
   }
   function autoCell(it, f, exceptId) {
     const g = gridOf(it);
     for (let cs = clamp(Math.round(9 / g.cw), 1, g.cols); cs >= 1; cs--) {
-      for (let rs = g.rows; rs >= 1; rs--) {
+      for (let rs = it.outline ? Math.min(2, g.rows) : g.rows; rs >= 1; rs--) {
         for (let r = g.rows - rs; r >= 0; r--) {
           for (let c = 0; c <= g.cols - cs; c++) {
             const cell = { c, r, cs, rs };
@@ -310,12 +413,12 @@ button.danger { color: var(--danger); }
     return null;
   }
   function layoutRooms(it) {
-    const g = gridFor(it.w, it.d);
+    const g = gridOf(it);
     for (let f = 0; f < it.floors; f++) {
       const list = it.rooms[f];
-      list.forEach((room) => { if (room.cell && !insideGrid(room.cell, g)) room.cell = null; });
+      list.forEach((room) => { if (room.cell && (!insideGrid(room.cell, g) || !cellInMask(room.cell, g))) room.cell = null; });
       const pending = list.filter((room) => room.cell === undefined);
-      if (pending.length && pending.length === list.length) {
+      if (!it.outline && pending.length && pending.length === list.length) {
         list.forEach((room, i) => {
           const c0 = Math.floor(i * g.cols / list.length), c1 = Math.floor((i + 1) * g.cols / list.length);
           room.cell = c1 > c0 ? { c: c0, r: 0, cs: c1 - c0, rs: g.rows } : null;
@@ -326,7 +429,7 @@ button.danger { color: var(--danger); }
     }
   }
   function remapRooms(it, oldGrid) {
-    const g = gridFor(it.w, it.d);
+    const g = gridFor(it.w, it.d, !!it.outline);
     if (g.cols === oldGrid.cols && g.rows === oldGrid.rows) return;
     Object.values(it.rooms || {}).forEach((list) => {
       const placed = [];
@@ -343,11 +446,32 @@ button.danger { color: var(--danger); }
       });
     });
   }
-  function ensureDoors(it) {
-    if (Array.isArray(it.doors) && it.doors.length) return;
-    it.doors = [{ id: uid(), name: it.kind === 'main' ? '중앙현관' : `${it.name} 현관`, type: 'center', side: 'front', t: .5 }];
+  function bestEdge(it) {
+    let best = 0, score = -Infinity;
+    it.outline.forEach((a, i) => {
+      const b = it.outline[(i + 1) % it.outline.length], dx = b[0] - a[0], dz = b[1] - a[1], len = Math.hypot(dx, dz);
+      const v = len * (1 + 2 * dx / (len || 1));
+      if (v > score) { score = v; best = i; }
+    });
+    return best;
   }
-  function doorLen(it, side) { return side === 'front' || side === 'back' ? it.w : it.d; }
+  function ensureDoors(it) {
+    if (!Array.isArray(it.doors) || !it.doors.length) {
+      it.doors = [{ id: uid(), name: it.kind === 'main' ? '중앙현관' : `${it.name} 현관`, type: 'center', side: it.outline ? bestEdge(it) : 'front', t: .5 }];
+      return;
+    }
+    it.doors.forEach((d) => {
+      if (it.outline && !(Number.isInteger(d.side) && d.side >= 0 && d.side < it.outline.length)) { d.side = bestEdge(it); d.t = .5; }
+      if (!it.outline && typeof d.side === 'number') { d.side = 'front'; d.t = .5; }
+    });
+  }
+  function doorLen(it, side) {
+    if (it.outline) {
+      const a = it.outline[side], b = it.outline[(side + 1) % it.outline.length];
+      return Math.hypot(b[0] - a[0], b[1] - a[1]);
+    }
+    return side === 'front' || side === 'back' ? it.w : it.d;
+  }
   function clampDoor(it, side, t, type) {
     const len = doorLen(it, side), half = DOOR_HALF[type] || 1.5;
     if (len <= half * 2) return .5;
@@ -358,6 +482,11 @@ button.danger { color: var(--danger); }
     return it.doors.some((o) => o.id !== door.id && o.side === door.side && Math.abs(o.t - door.t) * len < DOOR_HALF[o.type] + DOOR_HALF[door.type]);
   }
   function doorPoint(it, door) {
+    if (it.outline) {
+      const a = it.outline[door.side], b = it.outline[(door.side + 1) % it.outline.length];
+      const dx = b[0] - a[0], dz = b[1] - a[1], len = Math.hypot(dx, dz) || 1, nx = -dz / len, nz = dx / len;
+      return { x: a[0] + dx * door.t, z: a[1] + dz * door.t, ry: Math.atan2(nx, nz), nx, nz };
+    }
     const a = -doorLen(it, door.side) / 2 + door.t * doorLen(it, door.side);
     if (door.side === 'back') return { x: a, z: -it.d / 2, ry: Math.PI, nx: 0, nz: -1 };
     if (door.side === 'left') return { x: -it.w / 2, z: a, ry: -Math.PI / 2, nx: -1, nz: 0 };
@@ -507,12 +636,15 @@ button.danger { color: var(--danger); }
   const footprint = (it, rot) => ((rot === undefined ? it.rot : rot) % 2 ? [it.d, it.w] : [it.w, it.d]);
   function overlaps(it, x, z, rot) {
     if (CAT[it.kind].g === 'prop') return false;
-    const [w, d] = footprint(it, rot);
+    const r = rot === undefined ? it.rot : rot;
+    const [w, d] = footprint(it, r);
     return project.items.some((o) => {
       if (o.id === it.id || CAT[o.kind].g === 'prop') return false;
       if (CAT[o.kind].g === 'site' && CAT[it.kind].g === 'site') return false;
       const [ow, od] = footprint(o);
-      return Math.abs(x - o.x) < (w + ow) / 2 - .01 && Math.abs(z - o.z) < (d + od) / 2 - .01;
+      if (!(Math.abs(x - o.x) < (w + ow) / 2 - .01 && Math.abs(z - o.z) < (d + od) / 2 - .01)) return false;
+      if (!it.outline && !o.outline) return true;
+      return polysIntersect(worldPoly(it, x, z, r), worldPoly(o, o.x, o.z, o.rot));
     });
   }
   function clampPos(it, x, z, rot) {
@@ -714,6 +846,29 @@ button.danger { color: var(--danger); }
       wallM = new THREE.MeshLambertMaterial({ map: tex });
     } else wallM = wallMaterial(st);
     const floors = [];
+    if (it.outline) {
+      const pts = it.outline;
+      for (let f = 0; f < it.floors; f++) {
+        const fg = new THREE.Group();
+        const walls = new THREE.Mesh(polyWallGeometry(pts, f * it.h, (f + 1) * it.h, f, it.floors, !!wallPhoto), wallM);
+        walls.castShadow = walls.receiveShadow = true;
+        const cap = new THREE.Mesh(polyCapGeometry(pts, (f + 1) * it.h), capM);
+        cap.castShadow = true;
+        fg.add(walls, cap);
+        g.add(fg);
+        floors.push(fg);
+      }
+      const top = new THREE.Group(), y = it.floors * it.h;
+      top.add(new THREE.Mesh(polyCapGeometry(pts, y + .08), M(st.roof)));
+      pts.forEach((a, i) => edgeBox(top, a, pts[(i + 1) % pts.length], .55, .32, capM, y + .27));
+      g.add(top);
+      const entrances = new THREE.Group();
+      (it.doors || []).forEach((door) => buildEntrance(entrances, it, st, door));
+      g.add(entrances);
+      g.userData.floors = floors;
+      g.userData.top = top;
+      return;
+    }
     for (let f = 0; f < it.floors; f++) {
       const geo = new THREE.BoxGeometry(it.w, it.h, it.d);
       const uv = geo.attributes.uv;
@@ -769,6 +924,46 @@ button.danger { color: var(--danger); }
     g.userData.top = top;
   }
 
+  function polyWallGeometry(pts, y0, y1, floorIndex, floors, usePhoto) {
+    const pos = [], nor = [], uv = [];
+    let run = 0;
+    pts.forEach((a, i) => {
+      const b = pts[(i + 1) % pts.length], dx = b[0] - a[0], dz = b[1] - a[1], len = Math.hypot(dx, dz) || 1;
+      const nx = -dz / len, nz = dx / len, bays = Math.max(1, Math.round(len / 4.5));
+      const u0 = usePhoto ? 0 : run, u1 = usePhoto ? 1 : run + bays;
+      const v0 = usePhoto ? floorIndex / floors : 0, v1 = usePhoto ? (floorIndex + 1) / floors : 1;
+      pos.push(a[0], y0, a[1], b[0], y0, b[1], b[0], y1, b[1], a[0], y0, a[1], b[0], y1, b[1], a[0], y1, a[1]);
+      for (let k = 0; k < 6; k++) nor.push(nx, 0, nz);
+      uv.push(u0, v0, u1, v0, u1, v1, u0, v0, u1, v1, u0, v1);
+      run += bays;
+    });
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    return g;
+  }
+  function polyCapGeometry(pts, y) {
+    const tris = THREE.ShapeUtils.triangulateShape(pts.map((p) => new THREE.Vector2(p[0], p[1])), []);
+    const pos = [], nor = [];
+    tris.forEach(([i, j, k]) => {
+      let a = pts[i], b = pts[j], c = pts[k];
+      if ((b[1] - a[1]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[1] - a[1]) < 0) [b, c] = [c, b];
+      pos.push(a[0], y, a[1], b[0], y, b[1], c[0], y, c[1]);
+      nor.push(0, 1, 0, 0, 1, 0, 0, 1, 0);
+    });
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(new Array(pos.length / 3 * 2).fill(0), 2));
+    return g;
+  }
+  function edgeBox(parent, a, b, h, thick, mat, y) {
+    const dx = b[0] - a[0], dz = b[1] - a[1], len = Math.hypot(dx, dz);
+    const m = box(parent, len + thick, h, thick, mat, (a[0] + b[0]) / 2, y, (a[1] + b[1]) / 2);
+    m.rotation.y = -Math.atan2(dz, dx);
+    return m;
+  }
   function buildEntrance(parent, it, st, door) {
     const p = doorPoint(it, door), e = new THREE.Group(), capM = M(st.trim);
     e.position.set(p.x, 0, p.z);
@@ -1070,7 +1265,8 @@ button.danger { color: var(--danger); }
     const g = gridOf(it), a = room.cell, rect = roomRect(it, room), others = roomsOf(it, f).filter((o) => o.id !== room.id && o.cell);
     const free = (c, r) => {
       if (c < 0 || c >= g.cols || r < 0) return false;
-      if (r >= g.rows) return true;
+      if (r >= g.rows) return !it.outline;
+      if (g.mask && !g.mask[r][c]) return false;
       return !others.some((o) => c >= o.cell.c && c < o.cell.c + o.cell.cs && r >= o.cell.r && r < o.cell.r + o.cell.rs);
     };
     const colX = (c) => -it.w / 2 + (c + .5) * g.cw, rowZ = (r) => -it.d / 2 + (r + .5) * g.ch;
@@ -1094,12 +1290,22 @@ button.danger { color: var(--danger); }
     g.position.y = f * it.h;
     const { w, d } = it, h = Math.min(it.h, 3.6), z0 = -d / 2, z1 = d / 2 - CORR;
     const wallM = M(st.wall === '#f1f0ea' ? '#dfddd4' : '#f0ece2');
-    box(g, w, .14, d, M('#cfc9bc'), 0, .03, 0);
-    box(g, w, .02, CORR, M('#bfc4bf'), 0, .11, z1 + CORR / 2, true);
-    box(g, w, h, .2, wallM, 0, h / 2, z0);
-    box(g, .2, h, d, wallM, -w / 2, h / 2, 0);
-    box(g, .2, h, d, wallM, w / 2, h / 2, 0);
-    box(g, w, .95, .12, M(st.trim), 0, .5, d / 2 - .05);
+    if (it.outline) {
+      g.add(new THREE.Mesh(polyCapGeometry(it.outline, .1), M('#bfc4bf')));
+      it.outline.forEach((a, i) => {
+        const b = it.outline[(i + 1) % it.outline.length], len = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+        const facesCamera = (b[0] - a[0]) / len > .5;
+        if (facesCamera) edgeBox(g, a, b, .95, .14, M(st.trim), .5);
+        else edgeBox(g, a, b, h, .2, wallM, h / 2);
+      });
+    } else {
+      box(g, w, .14, d, M('#cfc9bc'), 0, .03, 0);
+      box(g, w, .02, CORR, M('#bfc4bf'), 0, .11, z1 + CORR / 2, true);
+      box(g, w, h, .2, wallM, 0, h / 2, z0);
+      box(g, .2, h, d, wallM, -w / 2, h / 2, 0);
+      box(g, .2, h, d, wallM, w / 2, h / 2, 0);
+      box(g, w, .95, .12, M(st.trim), 0, .5, d / 2 - .05);
+    }
     rooms.forEach((room, i) => {
       if (!room.cell) return;
       const r = roomRect(it, room), door = doorOf(it, f, room);
@@ -1254,7 +1460,7 @@ button.danger { color: var(--danger); }
   function viewRoom(it, f, roomId) {
     const room = roomsOf(it, f).find((r) => r.id === roomId);
     if (!room || !room.cell) return;
-    const door = doorOf(it, f, room), y = f * it.h, dist = door.side === 'front' ? 5.2 : 3.2;
+    const door = doorOf(it, f, room), y = f * it.h, dist = it.outline ? 4.4 : (door.side === 'front' ? 5.2 : 3.2);
     const tx = door.nz, tz = -door.nx;
     plateRoom = room.id;
     updateMarker();
@@ -1295,7 +1501,7 @@ button.danger { color: var(--danger); }
   function updateHint() {
     const h = $('hint');
     let t = '';
-    if (drawMode) t = '지도에서 건물 크기만큼 끌어 주세요. Esc 취소';
+    if (drawMode) t = '';
     else if (placing) t = '지도를 눌러 배치하세요. R 회전, Esc 취소';
     else if (step === 'place') t = '건물을 끌어 옮기고, 눌러서 선택합니다. R 회전, Delete 삭제';
     h.textContent = t;
@@ -1308,6 +1514,11 @@ button.danger { color: var(--danger); }
     p.scrollTop = top;
   }
 
+  function roofField(value, locked, onChange) {
+    const control = selectEl(locked ? 'flat' : value, ROOF_TYPES, onChange, '지붕 모양');
+    control.disabled = locked;
+    return field(locked ? '지붕 (꺾인 건물은 평지붕)' : '지붕 모양', control);
+  }
   function thumb(t) {
     const th = t.theme;
     const roof = th.roofType === 'gable' ? `<path d="M18 36 L60 16 L102 36 Z" fill="${th.roof}"/>` : `<rect x="18" y="31" width="84" height="5" fill="${th.trim}"/>`;
@@ -1397,7 +1608,7 @@ button.danger { color: var(--danger); }
     const color = (label, key) => field(label, el('input', { type: 'color', value: current[key], onchange: (e) => setValue({ [key]: e.target.value }) }));
     p.append(el('div', { class: 'cols' }, color('벽', 'wall'), color('포인트', 'trim'), color('지붕', 'roof')));
     p.append(el('div', { class: 'cols two' },
-      field('지붕 모양', selectEl(current.roofType, ROOF_TYPES, (v) => setValue({ roofType: v }), '지붕 모양')),
+      roofField(current.roofType, !!(target && target.outline), (v) => setValue({ roofType: v })),
       field('창문 모양', selectEl(current.windowType, WIN_TYPES, (v) => setValue({ windowType: v }), '창문 모양'))));
     if (target && hasOwnStyle(target)) {
       p.append(el('button', { type: 'button', style: 'width:100%', onclick: () => {
@@ -1449,7 +1660,7 @@ button.danger { color: var(--danger); }
       return el('button', { type: 'button', 'aria-pressed': !!(placing && placing.kind === k), onclick: () => (placing && placing.kind === k ? cancelPlace() : startPlace(k)) }, i, c.label);
     })));
     if (placeTab === 'building') {
-      p.append(el('button', { class: 'wide', style: 'margin-top:8px', type: 'button', 'aria-pressed': !!drawMode, onclick: () => (drawMode ? (endRectDraw(), renderPanel()) : startRectDraw()) }, drawMode ? '그리기 취소' : '새 건물 직접 그리기'));
+      p.append(el('button', { class: 'wide', style: 'margin-top:8px', type: 'button', 'aria-pressed': !!drawMode, onclick: () => (drawMode ? (endPolyDraw(), renderPanel()) : startPolyDraw()) }, drawMode ? '그리기 취소' : '새 건물 직접 그리기'));
     }
     p.append(el('h3', {}, '배치도 사진'), el('div', { class: 'actions', style: 'margin-top:0' },
       el('button', { type: 'button', onclick: () => $('fileGround').click() }, project.ground && project.ground.image ? '사진 바꾸기' : '사진 올리기'),
@@ -1480,6 +1691,10 @@ button.danger { color: var(--danger); }
     p.append(el('button', { class: 'primary next', type: 'button', onclick: () => setStep('rooms') }, '다음: 교실 정보'));
   }
   function changeItem(it, patch) {
+    if (it.outline && ('w' in patch || 'd' in patch)) {
+      const sx = ('w' in patch ? patch.w : it.w) / it.w, sz = ('d' in patch ? patch.d : it.d) / it.d;
+      patch = Object.assign({}, patch, { outline: it.outline.map((p) => [p[0] * sx, p[1] * sz]) });
+    }
     const old = {};
     Object.keys(patch).forEach((k) => { old[k] = it[k]; });
     Object.assign(it, patch);
@@ -1497,7 +1712,7 @@ button.danger { color: var(--danger); }
       return;
     }
     if (isBuilding(it) && ('w' in patch || 'd' in patch)) {
-      remapRooms(it, gridFor('w' in patch ? old.w : it.w, 'd' in patch ? old.d : it.d));
+      remapRooms(it, gridFor('w' in patch ? old.w : it.w, 'd' in patch ? old.d : it.d, !!it.outline));
     }
     ensureRooms(it);
     rebuildItem(it);
@@ -1571,7 +1786,7 @@ button.danger { color: var(--danger); }
         field('포인트', el('input', { type: 'color', value: st.trim, onchange: (e) => setStyle({ trim: e.target.value }) })),
         field('지붕', el('input', { type: 'color', value: st.roof, onchange: (e) => setStyle({ roof: e.target.value }) }))));
       box_.append(el('div', { class: 'cols two' },
-        field('지붕 모양', selectEl(st.roofType, ROOF_TYPES, (v) => setStyle({ roofType: v }), '지붕 모양')),
+        roofField(st.roofType, !!it.outline, (v) => setStyle({ roofType: v })),
         field('창문 모양', selectEl(st.windowType, WIN_TYPES, (v) => setStyle({ windowType: v }), '창문 모양'))));
     }
     if (c.g === 'building') {
@@ -1644,10 +1859,29 @@ button.danger { color: var(--danger); }
     const body = el('div', { class: 'door-body' }, '건물');
     body.style.aspectRatio = `${it.w} / ${it.d}`;
     body.style.width = `min(100%, ${Math.round(150 * it.w / it.d)}px)`;
+    if (it.outline) {
+      body.textContent = '';
+      body.style.border = '0';
+      body.style.background = 'none';
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('class', 'door-shape');
+      svg.setAttribute('viewBox', `${-it.w / 2} ${-it.d / 2} ${it.w} ${it.d}`);
+      svg.setAttribute('preserveAspectRatio', 'none');
+      svg.setAttribute('aria-hidden', 'true');
+      const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+      poly.setAttribute('points', it.outline.map((p) => p.join(',')).join(' '));
+      poly.setAttribute('fill', '#f7f5ef');
+      poly.setAttribute('stroke', '#5d686d');
+      poly.setAttribute('stroke-width', '2');
+      poly.setAttribute('vector-effect', 'non-scaling-stroke');
+      svg.append(poly);
+      body.append(svg);
+    }
     const plan = el('div', { class: 'door-plan', role: 'group', 'aria-label': `${it.name} 외곽 평면` }, body);
     const putDot = (n, side, t) => {
-      n.style.left = side === 'left' ? '0%' : side === 'right' ? '100%' : `${t * 100}%`;
-      n.style.top = side === 'back' ? '0%' : side === 'front' ? '100%' : `${t * 100}%`;
+      const q = doorPoint(it, { side, t });
+      n.style.left = `${(q.x + it.w / 2) / it.w * 100}%`;
+      n.style.top = `${(q.z + it.d / 2) / it.d * 100}%`;
     };
     it.doors.forEach((door) => {
       const dot = el('button', {
@@ -1656,7 +1890,8 @@ button.danger { color: var(--danger); }
         onfocus: () => { if (focus.door !== door.id) markDoor(it, door.id); },
         onkeydown: (e) => {
           const across = door.side === 'front' || door.side === 'back';
-          const dir = across ? { ArrowLeft: -1, ArrowRight: 1 }[e.key] : { ArrowUp: -1, ArrowDown: 1 }[e.key];
+          const dir = it.outline ? { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 }[e.key]
+            : across ? { ArrowLeft: -1, ArrowRight: 1 }[e.key] : { ArrowUp: -1, ArrowDown: 1 }[e.key];
           if (!dir) return;
           e.preventDefault();
           if (applyDoor(it, door, { t: door.t + dir / doorLen(it, door.side) })) {
@@ -1672,6 +1907,17 @@ button.danger { color: var(--danger); }
     const nearest = (e) => {
       const r = body.getBoundingClientRect();
       const u = clamp((e.clientX - r.left) / r.width, 0, 1), v = clamp((e.clientY - r.top) / r.height, 0, 1);
+      if (it.outline) {
+        const p = [u * it.w - it.w / 2, v * it.d - it.d / 2];
+        let best = { side: 0, t: .5, dist: Infinity };
+        it.outline.forEach((a, i) => {
+          const b = it.outline[(i + 1) % it.outline.length], dx = b[0] - a[0], dz = b[1] - a[1], l = dx * dx + dz * dz || 1;
+          const t = clamp(((p[0] - a[0]) * dx + (p[1] - a[1]) * dz) / l, 0, 1);
+          const dist = Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dz);
+          if (dist < best.dist) best = { side: i, t, dist };
+        });
+        return { side: best.side, t: best.t };
+      }
       const opts = [['back', v * r.height, u], ['front', (1 - v) * r.height, u], ['left', u * r.width, v], ['right', (1 - u) * r.width, v]];
       opts.sort((a, b) => a[1] - b[1]);
       return { side: opts[0][0], t: opts[0][2] };
@@ -1740,7 +1986,7 @@ button.danger { color: var(--danger); }
           onchange: () => { rebuildItem(it); applyFocus(); updateSelection(); updateMarker(); commit(); }
         }),
         selectEl(door.type, DOOR_TYPES, (v) => applyDoor(it, door, { type: v }), `${door.name} 종류`),
-        selectEl(door.side, DOOR_SIDES, (v) => applyDoor(it, door, { side: v }), `${door.name} 방향`),
+        selectEl(door.side, it.outline ? it.outline.map((_, i) => [String(i), `${i + 1}번 벽`]) : DOOR_SIDES, (v) => applyDoor(it, door, { side: it.outline ? Number(v) : v, t: it.outline ? .5 : door.t }), `${door.name} 방향`),
         el('button', { type: 'button', 'aria-label': `${door.name} 삭제`, disabled: it.doors.length <= 1, onclick: () => {
           it.doors = it.doors.filter((d) => d !== door);
           focus.door = it.doors[0].id;
@@ -1828,6 +2074,14 @@ button.danger { color: var(--danger); }
       n.style.width = `${a.cs / g.cols * 100}%`;
       n.style.height = `${a.rs / g.rows * 100}%`;
     };
+    if (g.mask) {
+      g.mask.forEach((row, r) => row.forEach((ok, c) => {
+        if (ok) return;
+        const off = el('div', { class: 'plan-off' });
+        place(off, { c, r, cs: 1, rs: 1 });
+        plan.append(off);
+      }));
+    }
     rooms.forEach((room) => {
       if (!room.cell) return;
       const on = focus.room === room.id;
@@ -1907,7 +2161,7 @@ button.danger { color: var(--danger); }
           }
         }
       }
-      if (!rect || !fitsCell(it, f, rect, a.room ? a.room.id : null)) { toast('다른 교실과 겹치는 자리입니다.'); return; }
+      if (!rect || !fitsCell(it, f, rect, a.room ? a.room.id : null)) { toast('다른 교실과 겹치거나 건물 밖인 자리입니다.'); return; }
       let room = a.room, created = false;
       if (!room) {
         room = { id: uid(), name: `새 교실 ${rooms.length + 1}`, type: 'class' };
@@ -1925,7 +2179,7 @@ button.danger { color: var(--danger); }
     };
     plan.addEventListener('pointerup', finish);
     plan.addEventListener('pointercancel', finish);
-    return el('div', {}, plan, el('div', { class: 'plan-hall' }, '복도'));
+    return el('div', {}, plan, it.outline ? el('p', { class: 'plan-note' }, '빗금 칸은 건물 밖입니다. 교실로 지정하지 않은 칸은 복도와 공용 공간이 됩니다.') : el('div', { class: 'plan-hall' }, '복도'));
   }
   function panelRooms(p) {
     p.append(el('h2', {}, '층별 교실 정보'));
@@ -2039,64 +2293,94 @@ button.danger { color: var(--danger); }
 
   /* ========== 배치 조작 ========== */
   let ghost = null, drawMode = null, photoTarget = null;
-  const drawPreview = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ color: '#2fb58f', transparent: true, opacity: .5, depthWrite: false }));
-  drawPreview.rotation.x = -Math.PI / 2;
-  drawPreview.position.y = .4;
-  drawPreview.visible = false;
-  overlay.add(drawPreview);
-  function startRectDraw() {
+  const drawLayer = new THREE.Group();
+  drawLayer.renderOrder = 30;
+  overlay.add(drawLayer);
+  const drawMat = (color) => new THREE.MeshBasicMaterial({ color, depthTest: false, transparent: true });
+  function startPolyDraw() {
     cancelPlace();
-    drawMode = { start: null, rect: null };
+    drawMode = { pts: [], cursor: null };
     focus = { id: null, floor: null, room: null };
     controls.enableRotate = false;
     applyFocus();
     updateSelection();
     updateMarker();
     stage.classList.add('placing');
+    $('drawBar').hidden = false;
     updateHint();
     renderPanel();
+    updatePolyDraw();
     viewTop();
   }
-  function endRectDraw() {
+  function endPolyDraw() {
     if (!drawMode) return;
     drawMode = null;
-    drawPreview.visible = false;
-    controls.enabled = true;
+    disposeTree(drawLayer);
     controls.enableRotate = true;
     stage.classList.remove('placing');
+    $('drawBar').hidden = true;
     updateHint();
   }
-  function rectFrom(a, b) {
-    const x0 = Math.min(a[0], b[0]), x1 = Math.max(a[0], b[0]), z0 = Math.min(a[1], b[1]), z1 = Math.max(a[1], b[1]);
-    return { x: (x0 + x1) / 2, z: (z0 + z1) / 2, w: x1 - x0, d: z1 - z0 };
-  }
-  function snapGround(p) {
-    return [clamp(snap(p.x), -GROUND.w / 2, GROUND.w / 2), clamp(snap(p.z), -GROUND.d / 2, GROUND.d / 2)];
-  }
-  function moveRectDraw(e) {
-    if (!drawMode.start) return;
+  function drawPoint(e) {
     const p = groundPoint(e);
-    if (!p) return;
-    const r = rectFrom(drawMode.start, snapGround(p));
-    drawMode.rect = r;
-    const bad = r.w < 8 || r.d < 8 || overlaps({ id: '', kind: 'custom', w: r.w, d: r.d, rot: 0 }, r.x, r.z, 0);
-    drawPreview.material.color.set(bad ? '#e0402d' : '#2fb58f');
-    drawPreview.scale.set(Math.max(r.w, .5), Math.max(r.d, .5), 1);
-    drawPreview.position.set(r.x, .4, r.z);
-    drawPreview.visible = true;
+    if (!p) return null;
+    let q = [clamp(snap(p.x), -GROUND.w / 2, GROUND.w / 2), clamp(snap(p.z), -GROUND.d / 2, GROUND.d / 2)];
+    const last = drawMode.pts[drawMode.pts.length - 1];
+    if (e.shiftKey && last) q = Math.abs(q[0] - last[0]) >= Math.abs(q[1] - last[1]) ? [q[0], last[1]] : [last[0], q[1]];
+    return q;
   }
-  function finishRectDraw() {
-    const r = drawMode.rect;
-    drawMode.start = null;
-    drawMode.rect = null;
-    drawPreview.visible = false;
-    controls.enabled = true;
-    if (!r) { toast('지도에서 건물 크기만큼 끌어 주세요.'); return; }
-    if (r.w < 8 || r.d < 8) { toast('건물은 가로와 세로가 8m 이상이어야 합니다.'); return; }
-    if (overlaps({ id: '', kind: 'custom', w: r.w, d: r.d, rot: 0 }, r.x, r.z, 0)) { toast('다른 건물이나 시설과 겹치는 자리입니다.'); return; }
-    const it = makeItem('custom', r.x, r.z, { name: uniqueName('custom'), w: r.w, d: r.d });
+  function updatePolyDraw() {
+    disposeTree(drawLayer);
+    if (!drawMode) return;
+    const { pts, cursor } = drawMode, n = pts.length;
+    $('drawHint').textContent = n < 3
+      ? `건물 모서리를 차례로 누르세요. (${n}/3점) Shift를 누르면 직각으로 그립니다.`
+      : `${n}개 점. 첫 점을 누르거나 완료를 누르면 건물이 됩니다.`;
+    $('drawUndo').disabled = !n;
+    $('drawDone').disabled = n < 3;
+    const line = pts.map((p) => new THREE.Vector3(p[0], .7, p[1]));
+    if (cursor && n) line.push(new THREE.Vector3(cursor[0], .7, cursor[1]));
+    if (line.length > 1) {
+      const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints(line), new THREE.LineBasicMaterial({ color: '#d92d20', depthTest: false, transparent: true }));
+      l.renderOrder = 30;
+      drawLayer.add(l);
+    }
+    pts.forEach((p, i) => {
+      const m = new THREE.Mesh(new THREE.CircleGeometry(i === 0 ? 2 : 1.3, 20), drawMat(i === 0 ? '#17695c' : '#d92d20'));
+      m.rotation.x = -Math.PI / 2;
+      m.position.set(p[0], .8, p[1]);
+      m.renderOrder = 31;
+      drawLayer.add(m);
+    });
+  }
+  function addPolyPoint(e) {
+    const p = drawPoint(e);
+    if (!p) { toast('지도 안쪽을 눌러 주세요.'); return; }
+    const pts = drawMode.pts, last = pts[pts.length - 1];
+    if (pts.length >= 3 && Math.hypot(p[0] - pts[0][0], p[1] - pts[0][1]) < 3) { finishPolyDraw(); return; }
+    if (last && Math.hypot(p[0] - last[0], p[1] - last[1]) < 1) return;
+    pts.push(p);
+    updatePolyDraw();
+  }
+  function undoPolyPoint() {
+    if (!drawMode) return;
+    drawMode.pts.pop();
+    updatePolyDraw();
+  }
+  function finishPolyDraw() {
+    if (!drawMode || drawMode.pts.length < 3) return;
+    const pts = drawMode.pts;
+    if (polySelfCrosses(pts)) { toast('선이 서로 교차합니다. 되돌리기로 점을 고쳐 주세요.'); return; }
+    if (Math.abs(polyArea(pts)) < 32) { toast('건물 면적이 너무 작습니다.'); return; }
+    const shape = fromWorldPoints(pts);
+    if (shape.w < 8 || shape.d < 8) { toast('건물의 가로와 세로는 8m 이상이어야 합니다.'); return; }
+    if (overlaps({ id: '', kind: 'custom', w: shape.w, d: shape.d, rot: 0, outline: shape.outline }, shape.x, shape.z, 0)) {
+      toast('다른 건물이나 시설과 겹치는 자리입니다.');
+      return;
+    }
+    const it = makeItem('custom', shape.x, shape.z, { name: uniqueName('custom'), w: shape.w, d: shape.d, outline: shape.outline });
     project.items.push(it);
-    endRectDraw();
+    endPolyDraw();
     rebuildItem(it);
     focus = { id: it.id, floor: null, room: null };
     applyFocus();
@@ -2136,7 +2420,7 @@ button.danger { color: var(--danger); }
     overlay.add(ghost);
   }
   function cancelPlace() {
-    endRectDraw();
+    endPolyDraw();
     if (ghost) { disposeTree(ghost); overlay.remove(ghost); ghost = null; }
     const had = !!placing;
     placing = null;
@@ -2205,14 +2489,6 @@ button.danger { color: var(--danger); }
   canvas.addEventListener('pointerdown', (e) => {
     down = { x: e.clientX, y: e.clientY };
     tween = null;
-    if (drawMode && e.button === 0) {
-      const p = groundPoint(e);
-      if (!p) { toast('지도 안쪽에서 시작해 주세요.'); return; }
-      controls.enabled = false;
-      drawMode.start = snapGround(p);
-      drawMode.rect = null;
-      return;
-    }
     if (drawMode) return;
     if (e.button !== 0 || placing || step !== 'place') return;
     const hit = pickHit(e);
@@ -2228,7 +2504,7 @@ button.danger { color: var(--danger); }
     }
   }, true);
   canvas.addEventListener('pointermove', (e) => {
-    if (drawMode) { moveRectDraw(e); return; }
+    if (drawMode) { drawMode.cursor = drawPoint(e); updatePolyDraw(); return; }
     if (placing) { moveGhost(e); return; }
     if (drag) {
       if (!drag.moved && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 5) return;
@@ -2249,11 +2525,9 @@ button.danger { color: var(--danger); }
   });
   function endPointer(e) {
     if (drawMode) {
-      if (drawMode.start) {
-        if (e.type === 'pointerup') { moveRectDraw(e); finishRectDraw(); }
-        else { drawMode.start = null; drawPreview.visible = false; controls.enabled = true; }
-      }
+      const wasClick = down && e.type === 'pointerup' && e.button === 0 && Math.hypot(e.clientX - down.x, e.clientY - down.y) <= 5;
       down = null;
+      if (wasClick) addPolyPoint(e);
       return;
     }
     if (drag) {
@@ -2311,6 +2585,10 @@ button.danger { color: var(--danger); }
       if (hit) selectFloor(hit.it.id, step === 'rooms' ? 0 : null);
     }
   }
+  canvas.addEventListener('dblclick', () => { if (drawMode) finishPolyDraw(); });
+  $('drawUndo').onclick = undoPolyPoint;
+  $('drawDone').onclick = finishPolyDraw;
+  $('drawCancel').onclick = () => { endPolyDraw(); renderPanel(); };
   canvas.addEventListener('pointerup', endPointer);
   canvas.addEventListener('pointercancel', endPointer);
   function onPinClick(id) {
@@ -2327,6 +2605,12 @@ button.danger { color: var(--danger); }
     const typing = /INPUT|SELECT|TEXTAREA/.test(e.target.tagName);
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !typing && !PUB) { e.preventDefault(); undo(); return; }
     if (typing || step !== 'place') return;
+    if (drawMode) {
+      if (e.key === 'Escape') { endPolyDraw(); renderPanel(); }
+      if (e.key === 'Enter') { e.preventDefault(); finishPolyDraw(); }
+      if (e.key === 'Backspace') { e.preventDefault(); undoPolyPoint(); }
+      return;
+    }
     if (e.key === 'Escape') cancelPlace();
     if (e.key.toLowerCase() === 'r' || e.key === 'ㄱ') {
       if (placing) {
@@ -2454,7 +2738,7 @@ button.danger { color: var(--danger); }
     d.buildings.forEach((b) => {
       const xs = b.outline.map((p) => p[0]), zs = b.outline.map((p) => p[1]);
       const x0 = Math.min(...xs), x1 = Math.max(...xs), z0 = Math.min(...zs), z1 = Math.max(...zs);
-      const w = Math.max(8, Math.ceil((x1 - x0) / 2) * 2), dep = Math.max(8, Math.ceil((z1 - z0) / 2) * 2);
+      const shape = fromWorldPoints(b.outline), w = shape.w, dep = shape.d;
       const floors = clamp(Math.round(b.floors) || 1, 1, 12);
       const rooms = {};
       Object.entries(b.rooms || {}).forEach(([key, names]) => {
@@ -2462,7 +2746,7 @@ button.danger { color: var(--danger); }
         if (f >= 0 && f < floors && Array.isArray(names) && names.length) rooms[f] = names.map((name) => ({ id: uid(), name: String(name), type: typeFor(String(name)) }));
       });
       const it = makeItem('custom', 0, 0, {
-        name: String(b.name || '새 건물').slice(0, 20), w, d: dep, floors, h: clamp(Number(b.floorHeight) || 3.8, 3.2, 14),
+        name: String(b.name || '새 건물').slice(0, 20), w, d: dep, outline: shape.outline, floors, h: clamp(Number(b.floorHeight) || 3.8, 3.2, 14),
         rooms, style: b.color ? { wall: b.color } : {}
       });
       if (b.photo) {
@@ -2559,6 +2843,25 @@ button.danger { color: var(--danger); }
   }
   new ResizeObserver(resize).observe(stage);
   const v = new THREE.Vector3();
+  const labelCache = new WeakMap();
+  function labelPoint(it) {
+    if (!it.outline) return [it.x, it.z];
+    if (!labelCache.has(it.outline)) {
+      const g = gridOf(it), n = it.outline.length;
+      const cx = it.outline.reduce((a, p) => a + p[0], 0) / n, cz = it.outline.reduce((a, p) => a + p[1], 0) / n;
+      let best = [cx, cz], dist = pointInPoly([cx, cz], it.outline) ? -1 : Infinity;
+      if (dist > 0) {
+        g.mask.forEach((row, r) => row.forEach((ok, c) => {
+          if (!ok) return;
+          const x = -it.w / 2 + (c + .5) * g.cw, z = -it.d / 2 + (r + .5) * g.ch, q = Math.hypot(x - cx, z - cz);
+          if (q < dist) { dist = q; best = [x, z]; }
+        }));
+      }
+      labelCache.set(it.outline, best);
+    }
+    const p = labelCache.get(it.outline);
+    return worldPoly({ outline: [p] }, it.x, it.z, it.rot)[0];
+  }
   function updatePins() {
     const w = stage.clientWidth, h = stage.clientHeight;
     built.forEach((b, id) => {
@@ -2566,7 +2869,8 @@ button.danger { color: var(--danger); }
       const it = getItem(id);
       if (!it) return;
       const top = isBuilding(it) ? it.floors * it.h + 2 : (isGate(it) ? 6.8 : 1.5);
-      v.set(it.x, top, it.z).project(camera);
+      const [px, pz] = labelPoint(it);
+      v.set(px, top, pz).project(camera);
       const show = !b.hidden && v.z < 1 && Math.abs(v.x) < 1.02 && Math.abs(v.y) < 1.02;
       b.pin.style.display = show ? '' : 'none';
       if (show) b.pin.style.transform = `translate(${Math.round((v.x + 1) / 2 * w)}px, ${Math.round((1 - v.y) / 2 * h)}px) translate(-50%, -100%)`;
