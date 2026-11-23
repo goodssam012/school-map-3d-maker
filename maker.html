@@ -106,6 +106,9 @@ button.danger { color: var(--danger); }
 .door-row.active { background: var(--accent-soft); }
 .door-row input, .door-row select { width: 100%; height: 34px; padding: 0 5px; border: 1px solid var(--line); border-radius: 6px; background: #fff; font-size: 13px; }
 .door-row button { min-height: 34px; padding: 0; }
+.photo { display: block; width: 100%; max-height: 190px; object-fit: cover; border-radius: 6px; margin: 6px 0 10px; }
+.check { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 14px; }
+.wide { width: 100%; margin-bottom: 10px; }
 .toast { position: fixed; z-index: 40; left: 50%; bottom: 24px; transform: translateX(-50%); max-width: calc(100vw - 32px); padding: 10px 16px; border-radius: var(--radius); background: var(--ink); color: #fff; }
 .fatal { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; background: var(--bg); }
 @media (max-width: 900px) {
@@ -148,6 +151,7 @@ button.danger { color: var(--danger); }
     cafeteria: { g: 'building', label: '급식실', w: 26, d: 18, floors: 1, h: 5, color: '#e3cf7d' },
     gym: { g: 'building', label: '체육관', w: 40, d: 30, floors: 1, h: 10, roof: 'arch', color: '#92b1d6' },
     hall: { g: 'building', label: '강당', w: 32, d: 24, floors: 1, h: 9, roof: 'gable', color: '#ad9bd0' },
+    custom: { g: 'building', label: '새 건물', w: 24, d: 16, floors: 3, h: 3.8, color: '#b8a88f' },
     field: { g: 'site', label: '운동장', w: 96, d: 60, color: '#c0694e' },
     court: { g: 'site', label: '농구장', w: 30, d: 18, color: '#4f86a8' },
     garden: { g: 'site', label: '정원', w: 22, d: 14, color: '#6fae62' },
@@ -219,7 +223,9 @@ button.danger { color: var(--danger); }
         <button id="btnUndo" type="button">되돌리기</button>
         <button id="btnOpen" type="button">열기</button>
         <button id="btnSave" type="button">저장</button>
-        <input id="fileOpen" type="file" accept=".json" hidden>
+        <input id="fileOpen" type="file" accept=".json,.js" hidden>
+        <input id="fileGround" type="file" accept="image/*" hidden>
+        <input id="filePhoto" type="file" accept="image/*" hidden>
       </div>
     </header>
     <main class="layout">
@@ -411,13 +417,77 @@ button.danger { color: var(--danger); }
     } catch (e) { /* 저장본 없음 */ }
     if (!project) project = newProject('classic', 'campus');
   }
-  const history = [JSON.stringify(project)];
+  function snapshot() { return JSON.stringify(project, (k, v) => (k === 'assets' ? undefined : v)); }
+  function usedAssets() {
+    const ids = new Set();
+    if (project.ground && project.ground.image) ids.add(project.ground.image);
+    project.items.forEach((i) => { if (i.photo) ids.add(i.photo); });
+    const out = {};
+    ids.forEach((id) => { if (project.assets && project.assets[id]) out[id] = project.assets[id]; });
+    return out;
+  }
+  const fullProject = () => Object.assign({}, JSON.parse(snapshot()), { assets: usedAssets() });
+  function assetDb() {
+    return new Promise((res, rej) => {
+      const r = indexedDB.open('school-3d-maker-assets', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('kv');
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+  }
+  async function saveAssets() {
+    const db = await assetDb();
+    await new Promise((res, rej) => {
+      const tx = db.transaction('kv', 'readwrite');
+      tx.objectStore('kv').put(usedAssets(), 'assets');
+      tx.oncomplete = res;
+      tx.onerror = () => rej(tx.error);
+    });
+    db.close();
+  }
+  async function readAssets() {
+    const db = await assetDb();
+    const out = await new Promise((res, rej) => {
+      const r = db.transaction('kv').objectStore('kv').get('assets');
+      r.onsuccess = () => res(r.result || {});
+      r.onerror = () => rej(r.error);
+    });
+    db.close();
+    return out;
+  }
+  function assetsChanged() {
+    if (PUB) return;
+    saveAssets().catch(() => toast('사진 자동 저장에 실패했습니다. 저장 버튼으로 파일을 보관해 주세요.'));
+  }
+  function readImage(file, max, quality) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file), img = new Image();
+      img.onload = () => {
+        const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+        const c = document.createElement('canvas');
+        c.width = Math.round(img.naturalWidth * k);
+        c.height = Math.round(img.naturalHeight * k);
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        URL.revokeObjectURL(url);
+        resolve({ data: c.toDataURL('image/jpeg', quality), w: c.width, h: c.height });
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('사진을 읽을 수 없습니다. JPG나 PNG 파일로 올려 주세요.')); };
+      img.src = url;
+    });
+  }
+  function addAsset(data) {
+    const id = 'a' + uid();
+    project.assets = project.assets || {};
+    project.assets[id] = data;
+    return id;
+  }
+  const history = [snapshot()];
   function persist() {
     if (PUB) return;
-    try { localStorage.setItem(KEY, JSON.stringify(project)); } catch (e) { toast('자동 저장에 실패했습니다. 저장 버튼으로 파일을 보관해 주세요.'); }
+    try { localStorage.setItem(KEY, snapshot()); } catch (e) { toast('자동 저장에 실패했습니다. 저장 버튼으로 파일을 보관해 주세요.'); }
   }
   function commit() {
-    const s = JSON.stringify(project);
+    const s = snapshot();
     if (s !== history[history.length - 1]) {
       history.push(s);
       if (history.length > 80) history.shift();
@@ -634,7 +704,15 @@ button.danger { color: var(--danger); }
 
   /* ========== 건물·시설·소품 만들기 ========== */
   function buildBuilding(it, g) {
-    const st = styleOf(it), wallM = wallMaterial(st), capM = M(st.trim);
+    const st = styleOf(it), capM = M(st.trim);
+    const wallPhoto = it.photo && it.photoOnWalls && project.assets && project.assets[it.photo];
+    let wallM;
+    if (wallPhoto) {
+      const tex = new THREE.TextureLoader().load(wallPhoto);
+      tex.encoding = THREE.sRGBEncoding;
+      tex.anisotropy = 4;
+      wallM = new THREE.MeshLambertMaterial({ map: tex });
+    } else wallM = wallMaterial(st);
     const floors = [];
     for (let f = 0; f < it.floors; f++) {
       const geo = new THREE.BoxGeometry(it.w, it.h, it.d);
@@ -642,7 +720,8 @@ button.danger { color: var(--danger); }
       for (let i = 0; i < 24; i++) {
         const face = Math.floor(i / 4);
         if (face === 2 || face === 3) continue;
-        uv.setX(i, uv.getX(i) * Math.max(1, Math.round((face < 2 ? it.d : it.w) / 4.5)));
+        if (wallPhoto) uv.setY(i, (f + uv.getY(i)) / it.floors);
+        else uv.setX(i, uv.getX(i) * Math.max(1, Math.round((face < 2 ? it.d : it.w) / 4.5)));
       }
       const mesh = new THREE.Mesh(geo, [wallM, wallM, capM, capM, wallM, wallM]);
       mesh.position.y = f * it.h + it.h / 2;
@@ -862,6 +941,18 @@ button.danger { color: var(--danger); }
     plot.rotation.x = -Math.PI / 2;
     plot.receiveShadow = true;
     groundGroup.add(plot);
+    const groundImage = project.ground && project.ground.image && project.assets && project.assets[project.ground.image];
+    if (groundImage) {
+      const k = Math.min(GROUND.w / project.ground.w, GROUND.d / project.ground.h);
+      const tex = new THREE.TextureLoader().load(groundImage);
+      tex.encoding = THREE.sRGBEncoding;
+      tex.anisotropy = 4;
+      const photo = new THREE.Mesh(new THREE.PlaneGeometry(project.ground.w * k, project.ground.h * k), new THREE.MeshLambertMaterial({ map: tex }));
+      photo.rotation.x = -Math.PI / 2;
+      photo.position.y = .012;
+      photo.receiveShadow = true;
+      groundGroup.add(photo);
+    }
     if (step === 'place') {
       const grid = new THREE.GridHelper(GROUND.w, Math.round(GROUND.w / 10), '#ffffff', '#ffffff');
       grid.scale.z = GROUND.d / GROUND.w;
@@ -1204,7 +1295,8 @@ button.danger { color: var(--danger); }
   function updateHint() {
     const h = $('hint');
     let t = '';
-    if (placing) t = '지도를 눌러 배치하세요. R 회전, Esc 취소';
+    if (drawMode) t = '지도에서 건물 크기만큼 끌어 주세요. Esc 취소';
+    else if (placing) t = '지도를 눌러 배치하세요. R 회전, Esc 취소';
     else if (step === 'place') t = '건물을 끌어 옮기고, 눌러서 선택합니다. R 회전, Delete 삭제';
     h.textContent = t;
     h.hidden = !t;
@@ -1356,6 +1448,18 @@ button.danger { color: var(--danger); }
       i.style.background = c.color;
       return el('button', { type: 'button', 'aria-pressed': !!(placing && placing.kind === k), onclick: () => (placing && placing.kind === k ? cancelPlace() : startPlace(k)) }, i, c.label);
     })));
+    if (placeTab === 'building') {
+      p.append(el('button', { class: 'wide', style: 'margin-top:8px', type: 'button', 'aria-pressed': !!drawMode, onclick: () => (drawMode ? (endRectDraw(), renderPanel()) : startRectDraw()) }, drawMode ? '그리기 취소' : '새 건물 직접 그리기'));
+    }
+    p.append(el('h3', {}, '배치도 사진'), el('div', { class: 'actions', style: 'margin-top:0' },
+      el('button', { type: 'button', onclick: () => $('fileGround').click() }, project.ground && project.ground.image ? '사진 바꾸기' : '사진 올리기'),
+      project.ground && project.ground.image ? el('button', { type: 'button', onclick: () => {
+        project.ground = null;
+        buildGround();
+        commit();
+        assetsChanged();
+        renderPanel();
+      } }, '사진 삭제') : null));
     const it = getItem(focus.id);
     if (placeTab === 'gate') {
       p.append(el('h3', {}, '중앙현관·건물 출입구'));
@@ -1469,6 +1573,32 @@ button.danger { color: var(--danger); }
       box_.append(el('div', { class: 'cols two' },
         field('지붕 모양', selectEl(st.roofType, ROOF_TYPES, (v) => setStyle({ roofType: v }), '지붕 모양')),
         field('창문 모양', selectEl(st.windowType, WIN_TYPES, (v) => setStyle({ windowType: v }), '창문 모양'))));
+    }
+    if (c.g === 'building') {
+      const stored = it.photo && project.assets && project.assets[it.photo];
+      box_.append(el('h3', {}, '건물 사진'));
+      if (stored) box_.append(el('img', { class: 'photo', src: stored, alt: `${it.name} 사진` }));
+      box_.append(el('div', { class: 'actions', style: 'margin:0 0 6px' },
+        el('button', { type: 'button', onclick: () => { photoTarget = it.id; $('filePhoto').click(); } }, stored ? '사진 바꾸기' : '사진 올리기'),
+        stored ? el('button', { type: 'button', onclick: () => {
+          it.photo = null;
+          it.photoOnWalls = false;
+          rebuildItem(it);
+          applyFocus();
+          updateSelection();
+          commit();
+          assetsChanged();
+          renderPanel();
+        } }, '사진 삭제') : null));
+      if (stored) {
+        box_.append(el('label', { class: 'check' }, el('input', { type: 'checkbox', checked: !!it.photoOnWalls, onchange: (e) => {
+          it.photoOnWalls = e.target.checked;
+          rebuildItem(it);
+          applyFocus();
+          updateSelection();
+          commit();
+        } }), '사진을 건물 벽면에 입히기'));
+      }
     }
     if (c.g === 'building') {
       box_.append(el('button', { type: 'button', style: 'width:100%', onclick: () => {
@@ -1885,6 +2015,7 @@ button.danger { color: var(--danger); }
       p.append(el('h2', {}, it.name), el('p', {}, '지도에 빨간 점으로 위치를 표시했습니다.'));
       return;
     }
+    if (it.photo && project.assets && project.assets[it.photo]) p.append(el('img', { class: 'photo', src: project.assets[it.photo], alt: `${it.name} 사진` }));
     p.append(el('h2', {}, it.name));
     p.append(el('h3', {}, '출입구'), el('div', { class: 'chips' }, (it.doors || []).map((d) => el('button', {
       class: 'chip', type: 'button', 'aria-pressed': focus.door === d.id, onclick: () => locateDoor(it, d.id)
@@ -1907,7 +2038,74 @@ button.danger { color: var(--danger); }
   }
 
   /* ========== 배치 조작 ========== */
-  let ghost = null;
+  let ghost = null, drawMode = null, photoTarget = null;
+  const drawPreview = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ color: '#2fb58f', transparent: true, opacity: .5, depthWrite: false }));
+  drawPreview.rotation.x = -Math.PI / 2;
+  drawPreview.position.y = .4;
+  drawPreview.visible = false;
+  overlay.add(drawPreview);
+  function startRectDraw() {
+    cancelPlace();
+    drawMode = { start: null, rect: null };
+    focus = { id: null, floor: null, room: null };
+    controls.enableRotate = false;
+    applyFocus();
+    updateSelection();
+    updateMarker();
+    stage.classList.add('placing');
+    updateHint();
+    renderPanel();
+    viewTop();
+  }
+  function endRectDraw() {
+    if (!drawMode) return;
+    drawMode = null;
+    drawPreview.visible = false;
+    controls.enabled = true;
+    controls.enableRotate = true;
+    stage.classList.remove('placing');
+    updateHint();
+  }
+  function rectFrom(a, b) {
+    const x0 = Math.min(a[0], b[0]), x1 = Math.max(a[0], b[0]), z0 = Math.min(a[1], b[1]), z1 = Math.max(a[1], b[1]);
+    return { x: (x0 + x1) / 2, z: (z0 + z1) / 2, w: x1 - x0, d: z1 - z0 };
+  }
+  function snapGround(p) {
+    return [clamp(snap(p.x), -GROUND.w / 2, GROUND.w / 2), clamp(snap(p.z), -GROUND.d / 2, GROUND.d / 2)];
+  }
+  function moveRectDraw(e) {
+    if (!drawMode.start) return;
+    const p = groundPoint(e);
+    if (!p) return;
+    const r = rectFrom(drawMode.start, snapGround(p));
+    drawMode.rect = r;
+    const bad = r.w < 8 || r.d < 8 || overlaps({ id: '', kind: 'custom', w: r.w, d: r.d, rot: 0 }, r.x, r.z, 0);
+    drawPreview.material.color.set(bad ? '#e0402d' : '#2fb58f');
+    drawPreview.scale.set(Math.max(r.w, .5), Math.max(r.d, .5), 1);
+    drawPreview.position.set(r.x, .4, r.z);
+    drawPreview.visible = true;
+  }
+  function finishRectDraw() {
+    const r = drawMode.rect;
+    drawMode.start = null;
+    drawMode.rect = null;
+    drawPreview.visible = false;
+    controls.enabled = true;
+    if (!r) { toast('지도에서 건물 크기만큼 끌어 주세요.'); return; }
+    if (r.w < 8 || r.d < 8) { toast('건물은 가로와 세로가 8m 이상이어야 합니다.'); return; }
+    if (overlaps({ id: '', kind: 'custom', w: r.w, d: r.d, rot: 0 }, r.x, r.z, 0)) { toast('다른 건물이나 시설과 겹치는 자리입니다.'); return; }
+    const it = makeItem('custom', r.x, r.z, { name: uniqueName('custom'), w: r.w, d: r.d });
+    project.items.push(it);
+    endRectDraw();
+    rebuildItem(it);
+    focus = { id: it.id, floor: null, room: null };
+    applyFocus();
+    updateSelection();
+    commit();
+    renderPanel();
+    const name = $('panel').querySelector('.inspector input');
+    if (name) { name.focus(); name.select(); }
+  }
   function startPlace(kind) {
     cancelPlace();
     const it = makeItem(kind, 0, 0, { name: uniqueName(kind) });
@@ -1938,6 +2136,7 @@ button.danger { color: var(--danger); }
     overlay.add(ghost);
   }
   function cancelPlace() {
+    endRectDraw();
     if (ghost) { disposeTree(ghost); overlay.remove(ghost); ghost = null; }
     const had = !!placing;
     placing = null;
@@ -2006,6 +2205,15 @@ button.danger { color: var(--danger); }
   canvas.addEventListener('pointerdown', (e) => {
     down = { x: e.clientX, y: e.clientY };
     tween = null;
+    if (drawMode && e.button === 0) {
+      const p = groundPoint(e);
+      if (!p) { toast('지도 안쪽에서 시작해 주세요.'); return; }
+      controls.enabled = false;
+      drawMode.start = snapGround(p);
+      drawMode.rect = null;
+      return;
+    }
+    if (drawMode) return;
     if (e.button !== 0 || placing || step !== 'place') return;
     const hit = pickHit(e);
     if (!hit) return;
@@ -2020,6 +2228,7 @@ button.danger { color: var(--danger); }
     }
   }, true);
   canvas.addEventListener('pointermove', (e) => {
+    if (drawMode) { moveRectDraw(e); return; }
     if (placing) { moveGhost(e); return; }
     if (drag) {
       if (!drag.moved && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 5) return;
@@ -2039,6 +2248,14 @@ button.danger { color: var(--danger); }
     }
   });
   function endPointer(e) {
+    if (drawMode) {
+      if (drawMode.start) {
+        if (e.type === 'pointerup') { moveRectDraw(e); finishRectDraw(); }
+        else { drawMode.start = null; drawPreview.visible = false; controls.enabled = true; }
+      }
+      down = null;
+      return;
+    }
     if (drag) {
       const d = drag;
       drag = null;
@@ -2189,7 +2406,9 @@ button.danger { color: var(--danger); }
     if (history.length < 2) return;
     cancelPlace();
     history.pop();
+    const keepAssets = project.assets;
     project = JSON.parse(history[history.length - 1]);
+    project.assets = keepAssets;
     if (!getItem(focus.id)) focus = { id: null, floor: null, room: null };
     else if (focus.floor !== null && focus.floor >= getItem(focus.id).floors) focus.floor = 0;
     rebuildAll();
@@ -2207,7 +2426,7 @@ button.danger { color: var(--danger); }
   const safeName = () => (project.name || '학교').replace(/[\\/:*?"<>|]/g, '').trim() || '학교';
   function exportHtml() {
     const close = '<' + '/script>';
-    const data = JSON.stringify(project).replace(/</g, '\\u003c');
+    const data = JSON.stringify(fullProject()).replace(/</g, '\\u003c');
     const title = (project.name || '학교').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
     const html = '<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">' +
       `<title>${title} 3D 안내도</title><style>${$('app-style').textContent}</style></head><body>` +
@@ -2218,21 +2437,111 @@ button.danger { color: var(--danger); }
     toast('완성 안내도를 내려받았습니다.');
   }
   $('btnUndo').onclick = undo;
-  $('btnSave').onclick = () => { download(`${safeName()}_제작파일.json`, JSON.stringify(project), 'application/json'); toast('제작 파일을 저장했습니다.'); };
+  $('btnSave').onclick = () => { download(`${safeName()}_제작파일.json`, JSON.stringify(fullProject()), 'application/json'); toast('제작 파일을 저장했습니다.'); };
   $('btnOpen').onclick = () => $('fileOpen').click();
+  function fromLegacy(d) {
+    const next = newProject('classic', 'empty');
+    next.name = String(d.name || '우리학교').replace(/\s*3D 안내도$/, '').slice(0, 24) || '우리학교';
+    next.assets = {};
+    if (d.ground && d.ground.image) {
+      const id = 'a' + uid();
+      next.assets[id] = d.ground.image;
+      next.ground = { image: id, w: d.ground.width, h: d.ground.height };
+    }
+    const prev = project;
+    project = next;
+    let moved = 0;
+    d.buildings.forEach((b) => {
+      const xs = b.outline.map((p) => p[0]), zs = b.outline.map((p) => p[1]);
+      const x0 = Math.min(...xs), x1 = Math.max(...xs), z0 = Math.min(...zs), z1 = Math.max(...zs);
+      const w = Math.max(8, Math.ceil((x1 - x0) / 2) * 2), dep = Math.max(8, Math.ceil((z1 - z0) / 2) * 2);
+      const floors = clamp(Math.round(b.floors) || 1, 1, 12);
+      const rooms = {};
+      Object.entries(b.rooms || {}).forEach(([key, names]) => {
+        const f = Number(key) - 1;
+        if (f >= 0 && f < floors && Array.isArray(names) && names.length) rooms[f] = names.map((name) => ({ id: uid(), name: String(name), type: typeFor(String(name)) }));
+      });
+      const it = makeItem('custom', 0, 0, {
+        name: String(b.name || '새 건물').slice(0, 20), w, d: dep, floors, h: clamp(Number(b.floorHeight) || 3.8, 3.2, 14),
+        rooms, style: b.color ? { wall: b.color } : {}
+      });
+      if (b.photo) {
+        it.photo = 'a' + uid();
+        next.assets[it.photo] = b.photo;
+        it.photoOnWalls = !!b.photoOnWalls;
+      }
+      const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
+      let spot = null;
+      for (let radius = 0; radius <= 200 && !spot; radius += 4) {
+        for (let a = 0; a < (radius ? 24 : 1) && !spot; a++) {
+          const [x, z] = clampPos(it, cx + Math.cos(a / 24 * Math.PI * 2) * radius, cz + Math.sin(a / 24 * Math.PI * 2) * radius);
+          if (!overlaps(it, x, z)) { spot = [x, z]; if (radius) moved++; }
+        }
+      }
+      if (!spot) { project = prev; throw new Error('no space'); }
+      [it.x, it.z] = spot;
+      next.items.push(it);
+    });
+    project = prev;
+    return { next, moved };
+  }
   $('fileOpen').onchange = async (e) => {
     const f = e.target.files[0];
     e.target.value = '';
     if (!f) return;
     try {
-      const d = JSON.parse(await f.text());
-      if (!validProject(d)) throw new Error('invalid');
-      project = d;
+      const text = await f.text();
+      const raw = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1));
+      const legacy = raw && Array.isArray(raw.buildings) && raw.buildings.every((b) => Array.isArray(b.outline) && b.outline.length >= 3);
+      if (!legacy && !validProject(raw)) throw new Error('invalid');
+      if (project.items.length && !confirm('지금 작업 중인 내용을 불러온 파일로 바꿀까요? 필요하면 먼저 저장해 주세요.')) return;
+      let moved = 0;
+      if (legacy) {
+        const r = fromLegacy(raw);
+        project = r.next;
+        moved = r.moved;
+      } else project = raw;
       project.items.forEach(ensureRooms);
+      focus = { id: null, floor: null, room: null };
       commit();
+      assetsChanged();
       rebuildAll();
       setStep('style');
-    } catch (err) { toast('제작 파일이 아닙니다.'); }
+      if (legacy) toast(moved ? `불러왔습니다. 겹치는 건물 ${moved}개는 위치를 옮겼습니다.` : '이전 안내도를 불러왔습니다.');
+    } catch (err) { toast('제작 파일이나 이전 안내도 파일이 아닙니다.'); }
+  };
+  $('fileGround').onchange = async (e) => {
+    const f = e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    try {
+      const img = await readImage(f, 1800, .8);
+      project.ground = { image: addAsset(img.data), w: img.w, h: img.h };
+      buildGround();
+      commit();
+      assetsChanged();
+      renderPanel();
+      viewTop();
+      toast('배치도를 올렸습니다. 새 건물 직접 그리기로 건물을 따라 그려 보세요.');
+    } catch (err) { toast(err.message); }
+  };
+  $('filePhoto').onchange = async (e) => {
+    const f = e.target.files[0];
+    e.target.value = '';
+    const it = getItem(photoTarget);
+    photoTarget = null;
+    if (!f || !it) return;
+    try {
+      const img = await readImage(f, 1280, .82);
+      it.photo = addAsset(img.data);
+      it.photoOnWalls = true;
+      rebuildItem(it);
+      applyFocus();
+      updateSelection();
+      commit();
+      assetsChanged();
+      renderPanel();
+    } catch (err) { toast(err.message); }
   };
   $('btnHome').onclick = () => {
     if (step === 'done') { focus = { id: null, floor: null, room: null }; buildInterior(); applyFocus(); renderPanel(); }
@@ -2281,7 +2590,7 @@ button.danger { color: var(--danger); }
   if (PUB) $('tools').hidden = $('steps').hidden = true;
   if (PUB) { $('brand').textContent = `${project.name} 3D 안내도`; document.title = `${project.name} 3D 안내도`; }
   project.items.forEach(ensureRooms);
-  history[0] = JSON.stringify(project);
+  history[0] = snapshot();
   syncFinder();
   resize();
   rebuildAll();
@@ -2293,6 +2602,14 @@ button.danger { color: var(--danger); }
   controls.target.set(0, 0, 0);
   controls.update();
   requestAnimationFrame(loop);
+  if (!PUB) {
+    readAssets().then((stored) => {
+      if (!Object.keys(stored).length) return;
+      project.assets = Object.assign({}, stored, project.assets);
+      rebuildAll();
+      renderPanel();
+    }).catch(() => {});
+  }
 })();
 </script>
 </body>

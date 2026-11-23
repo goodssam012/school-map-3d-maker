@@ -11,24 +11,11 @@
   <div id="app">
     <header class="topbar">
       <h1 id="schoolName">학교 안내도</h1>
-      <span id="adminBadge" class="badge" hidden>관리자</span>
       <div class="search">
         <input id="search" type="search" placeholder="교실, 건물 찾기" aria-label="교실이나 건물 찾기" autocomplete="off">
         <div id="searchResults" class="search-results" hidden></div>
       </div>
     </header>
-
-    <div id="toolbar" class="toolbar" hidden>
-      <button id="btnGround" type="button">배치도 사진 올리기</button>
-      <button id="btnAdd" type="button" class="primary">건물 추가</button>
-      <span class="spacer"></span>
-      <span id="saveState" class="save-state" role="status"></span>
-      <button id="btnImport" type="button">불러오기</button>
-      <button id="btnExport" type="button">공개용 파일 내보내기</button>
-      <button id="btnReset" type="button" class="danger">초기화</button>
-      <input id="fileGround" type="file" accept="image/*" hidden>
-      <input id="fileImport" type="file" accept=".js,.json" hidden>
-    </div>
 
     <main class="layout">
       <section id="stage" class="stage" aria-label="3D 학교 지도">
@@ -39,16 +26,9 @@
           <button id="btnTop" type="button">위에서 보기</button>
           <button id="btnSpin" type="button" aria-pressed="false">자동 회전</button>
         </div>
-        <div id="drawBar" class="draw-bar" hidden>
-          <span id="drawHint"></span>
-          <button id="drawUndo" type="button">되돌리기</button>
-          <button id="drawDone" type="button" class="primary">완료</button>
-          <button id="drawCancel" type="button">취소</button>
-        </div>
       </section>
       <aside id="panel" class="panel" aria-live="polite"></aside>
     </main>
-    <div id="toast" class="toast" role="alert" hidden></div>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>

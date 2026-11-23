@@ -1,7 +1,6 @@
 (function () {
   'use strict';
 
-  const ADMIN = new URLSearchParams(location.search).has('edit');
   const $ = (id) => document.getElementById(id);
   const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const clone = (o) => JSON.parse(JSON.stringify(o));
@@ -19,66 +18,12 @@
     return n;
   }
 
-  let toastTimer;
-  function toast(msg) {
-    const t = $('toast');
-    t.textContent = msg;
-    t.hidden = false;
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { t.hidden = true; }, 3800);
-  }
-
   if (!window.THREE || !THREE.OrbitControls) {
     $('stage').append(el('div', { class: 'fatal' }, '3D 도구를 불러오지 못했습니다. 인터넷 연결을 확인한 뒤 새로고침해 주세요.'));
     return;
   }
 
-  /* ---------- 임시 저장 (관리자 브라우저 전용) ---------- */
-  const store = {
-    open() {
-      return new Promise((res, rej) => {
-        const r = indexedDB.open('school-map-3d', 1);
-        r.onupgradeneeded = () => r.result.createObjectStore('kv');
-        r.onsuccess = () => res(r.result);
-        r.onerror = () => rej(r.error);
-      });
-    },
-    async get() {
-      const db = await this.open();
-      return new Promise((res, rej) => {
-        const r = db.transaction('kv').objectStore('kv').get('draft');
-        r.onsuccess = () => res(r.result || null);
-        r.onerror = () => rej(r.error);
-      });
-    },
-    async set(v) {
-      const db = await this.open();
-      return new Promise((res, rej) => {
-        const tx = db.transaction('kv', 'readwrite');
-        if (v === null) tx.objectStore('kv').delete('draft');
-        else tx.objectStore('kv').put(v, 'draft');
-        tx.oncomplete = res;
-        tx.onerror = () => rej(tx.error);
-      });
-    }
-  };
-
-  let state = clone(window.SCHOOL_DATA);
-  let saveTimer;
-  function touch() {
-    if (!ADMIN) return;
-    $('saveState').textContent = '저장 중…';
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(async () => {
-      try {
-        await store.set(clone(state));
-        $('saveState').textContent = '이 브라우저에 저장됨';
-      } catch (e) {
-        $('saveState').textContent = '저장 실패';
-        toast('자동 저장에 실패했습니다. 공개용 파일로 내보내 보관해 주세요.');
-      }
-    }, 350);
-  }
+  const state = clone(window.SCHOOL_DATA);
 
   /* ---------- 3D 장면 ---------- */
   const stage = $('stage');
@@ -117,8 +62,7 @@
 
   const groundGroup = new THREE.Group();
   const buildingsGroup = new THREE.Group();
-  const drawGroup = new THREE.Group();
-  scene.add(groundGroup, buildingsGroup, drawGroup);
+  scene.add(groundGroup, buildingsGroup);
 
   const texLoader = new THREE.TextureLoader();
   function photoTexture(url) {
@@ -402,13 +346,6 @@
         swatch, el('strong', {}, b.name), el('span', { class: 'rooms' }, `${b.floors}층`));
     })));
     if (!state.buildings.length) panel.append(el('p', {}, '아직 건물이 없습니다.'));
-    if (ADMIN) {
-      const name = el('input', { value: state.name, oninput: (e) => { state.name = e.target.value; $('schoolName').textContent = state.name; document.title = state.name; touch(); } });
-      const intro = el('textarea', { value: state.intro || '', oninput: (e) => { state.intro = e.target.value; touch(); } });
-      panel.append(el('div', { class: 'form' },
-        el('label', {}, '안내도 제목', name),
-        el('label', {}, '소개 문구', intro)));
-    }
   }
 
   function renderBuilding(panel, b) {
@@ -426,81 +363,9 @@
       }, el('strong', {}, `${i + 1}층`), el('span', { class: 'rooms' }, rooms.join(', ') || '등록된 교실 없음')));
     }
     panel.append(el('div', { class: 'list' }, rows));
-    if (ADMIN) panel.append(editForm(b));
-  }
-
-  function editForm(b) {
-    const rebuild = () => { buildBuilding(b); applyFocus(); touch(); };
-    const num = (label, value, min, max, step, apply) => el('label', {}, label, el('input', {
-      type: 'number', value, min, max, step,
-      onchange: (e) => {
-        const v = Math.min(max, Math.max(min, Number(e.target.value) || min));
-        e.target.value = v;
-        apply(v);
-      }
-    }));
-    const photoInput = el('input', {
-      type: 'file', accept: 'image/*', hidden: true,
-      onchange: async (e) => {
-        const f = e.target.files[0];
-        e.target.value = '';
-        if (!f) return;
-        try {
-          b.photo = await readImage(f, 1280);
-          b.photoOnWalls = true;
-          rebuild();
-          renderPanel();
-        } catch (err) { toast(err.message); }
-      }
-    });
-    const roomFields = [];
-    for (let i = b.floors - 1; i >= 0; i--) {
-      roomFields.push(el('label', {}, `${i + 1}층 교실 (한 줄에 하나씩)`, el('textarea', {
-        value: roomsOf(b, i).join('\n'),
-        onchange: (e) => {
-          b.rooms = b.rooms || {};
-          b.rooms[i + 1] = e.target.value.split('\n').map((s) => s.trim()).filter(Boolean);
-          touch();
-          renderPanel();
-        }
-      })));
-    }
-    return el('div', { class: 'form' },
-      el('label', {}, '건물 이름', el('input', {
-        id: 'fieldName', value: b.name,
-        oninput: (e) => { b.name = e.target.value; built.get(b.id).label.textContent = b.name; touch(); },
-        onchange: renderPanel
-      })),
-      el('div', { class: 'cols' },
-        num('층수', b.floors, 1, 30, 1, (v) => { b.floors = v; rebuild(); renderPanel(); }),
-        num('층 높이(m)', b.floorHeight, 2.5, 20, 0.5, (v) => { b.floorHeight = v; rebuild(); }),
-        el('label', {}, '색상', el('input', { type: 'color', value: b.color, onchange: (e) => { b.color = e.target.value; rebuild(); } }))),
-      el('label', {}, '설명', el('textarea', { value: b.desc || '', onchange: (e) => { b.desc = e.target.value; touch(); renderPanel(); } })),
-      el('div', { class: 'actions' },
-        el('button', { type: 'button', onclick: () => photoInput.click() }, b.photo ? '건물 사진 바꾸기' : '건물 사진 올리기'),
-        b.photo ? el('button', { type: 'button', onclick: () => { b.photo = null; b.photoOnWalls = false; rebuild(); renderPanel(); } }, '사진 삭제') : null,
-        photoInput),
-      b.photo ? el('label', { class: 'check' }, el('input', {
-        type: 'checkbox', checked: !!b.photoOnWalls,
-        onchange: (e) => { b.photoOnWalls = e.target.checked; rebuild(); }
-      }), '사진을 건물 벽면에 입히기') : null,
-      roomFields,
-      el('div', { class: 'actions' },
-        el('button', { type: 'button', onclick: () => startDraw(b.id) }, '윤곽 다시 그리기'),
-        el('button', {
-          type: 'button', class: 'danger',
-          onclick: () => {
-            if (!confirm(`'${b.name}' 건물을 삭제할까요?`)) return;
-            state.buildings = state.buildings.filter((x) => x !== b);
-            removeBuilt(b.id);
-            clearSelection();
-            touch();
-          }
-        }, '건물 삭제')));
   }
 
   function selectBuilding(id, floor, moveCamera) {
-    if (drawing) return;
     selected = { id, floor };
     controls.autoRotate = false;
     $('btnSpin').setAttribute('aria-pressed', 'false');
@@ -550,109 +415,12 @@
     if (!e.target.closest('.search')) $('searchResults').hidden = true;
   });
 
-  /* ---------- 건물 윤곽 그리기 ---------- */
-  let drawing = null;
   const raycaster = new THREE.Raycaster();
   const ndc = new THREE.Vector2();
-  const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-
   function setRay(e) {
     const r = canvas.getBoundingClientRect();
     ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
     raycaster.setFromCamera(ndc, camera);
-  }
-  function groundPoint(e) {
-    setRay(e);
-    const p = raycaster.ray.intersectPlane(groundPlane, new THREE.Vector3());
-    if (!p) return null;
-    const { width: w, height: h } = state.ground;
-    if (Math.abs(p.x) > w / 2 || Math.abs(p.z) > h / 2) return null;
-    return [Math.round(p.x * 2) / 2, Math.round(p.z * 2) / 2];
-  }
-
-  function startDraw(targetId) {
-    drawing = { targetId: targetId || null, pts: [], cursor: null };
-    tween = null;
-    controls.autoRotate = false;
-    controls.enableRotate = false;
-    $('btnSpin').setAttribute('aria-pressed', 'false');
-    stage.classList.add('drawing');
-    $('drawBar').hidden = false;
-    viewTop();
-    updateDraw();
-  }
-  function endDraw() {
-    drawing = null;
-    disposeGroup(drawGroup);
-    controls.enableRotate = true;
-    stage.classList.remove('drawing');
-    $('drawBar').hidden = true;
-  }
-  function updateDraw() {
-    disposeGroup(drawGroup);
-    if (!drawing) return;
-    const n = drawing.pts.length;
-    $('drawHint').textContent = n < 3
-      ? `건물 모서리를 차례로 클릭하세요. (${n}/3점 이상)`
-      : `${n}개 점 선택. 첫 점을 누르거나 완료를 누르면 닫힙니다.`;
-    $('drawUndo').disabled = !n;
-    $('drawDone').disabled = n < 3;
-    const line = drawing.pts.map((p) => new THREE.Vector3(p[0], 0.6, p[1]));
-    if (drawing.cursor && n) line.push(new THREE.Vector3(drawing.cursor[0], 0.6, drawing.cursor[1]));
-    if (line.length > 1) {
-      drawGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(line), new THREE.LineBasicMaterial({ color: '#d4331f' })));
-    }
-    drawing.pts.forEach((p, i) => {
-      const m = new THREE.Mesh(new THREE.CircleGeometry(i === 0 ? 1.8 : 1.2, 20), new THREE.MeshBasicMaterial({ color: i === 0 ? '#17695c' : '#d4331f' }));
-      m.rotation.x = -Math.PI / 2;
-      m.position.set(p[0], 0.7, p[1]);
-      drawGroup.add(m);
-    });
-  }
-  function segCross(a, b, c, d) {
-    const o = (p, q, r) => (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
-    return o(a, b, c) * o(a, b, d) < 0 && o(c, d, a) * o(c, d, b) < 0;
-  }
-  function selfCrosses(pts) {
-    for (let i = 0; i < pts.length; i++) {
-      for (let j = i + 2; j < pts.length; j++) {
-        if (i === 0 && j === pts.length - 1) continue;
-        if (segCross(pts[i], pts[(i + 1) % pts.length], pts[j], pts[(j + 1) % pts.length])) return true;
-      }
-    }
-    return false;
-  }
-  function finishDraw() {
-    if (!drawing || drawing.pts.length < 3) return;
-    const pts = drawing.pts;
-    if (selfCrosses(pts)) { toast('선이 서로 교차합니다. 되돌리기로 점을 고쳐 주세요.'); return; }
-    if (Math.abs(signedArea(pts)) < 4) { toast('건물 면적이 너무 작습니다.'); return; }
-    let b = getB(drawing.targetId);
-    if (b) {
-      b.outline = pts;
-    } else {
-      b = {
-        id: `b${Date.now()}`, name: '새 건물', floors: 3, floorHeight: 4, color: '#d9c7a8',
-        desc: '', photo: null, photoOnWalls: false, outline: pts, rooms: {}
-      };
-      state.buildings.push(b);
-    }
-    endDraw();
-    buildBuilding(b);
-    touch();
-    selectBuilding(b.id, null, true);
-    const f = $('fieldName');
-    if (f) { f.focus(); f.select(); }
-  }
-  function drawClick(e) {
-    const p = groundPoint(e);
-    if (!p) { toast('지도 안쪽을 클릭해 주세요.'); return; }
-    const pts = drawing.pts;
-    if (pts.length >= 3 && Math.hypot(p[0] - pts[0][0], p[1] - pts[0][1]) < 3) { finishDraw(); return; }
-    const last = pts[pts.length - 1];
-    if (last && Math.hypot(p[0] - last[0], p[1] - last[1]) < 0.6) return;
-    pts.push(p);
-    updateDraw();
   }
 
   /* ---------- 포인터 ---------- */
@@ -664,7 +432,6 @@
   }
   canvas.addEventListener('pointerdown', (e) => { down = { x: e.clientX, y: e.clientY }; tween = null; });
   canvas.addEventListener('pointermove', (e) => {
-    if (drawing) { drawing.cursor = groundPoint(e); updateDraw(); return; }
     if (e.pointerType !== 'mouse' || e.buttons) return;
     const id = pickBuilding(e);
     if (id !== hoveredId) {
@@ -678,123 +445,12 @@
     const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
     down = null;
     if (moved > 5 || e.button !== 0) return;
-    if (drawing) { drawClick(e); return; }
     const id = pickBuilding(e);
     if (id) selectBuilding(id, null, true);
   });
-  canvas.addEventListener('dblclick', () => { if (drawing) finishDraw(); });
-  window.addEventListener('keydown', (e) => {
-    if (!drawing) return;
-    if (e.key === 'Escape') endDraw();
-    if (e.key === 'Enter') finishDraw();
-    if (e.key === 'Backspace') { e.preventDefault(); drawing.pts.pop(); updateDraw(); }
-  });
-
-  /* ---------- 이미지 / 파일 ---------- */
-  function readImage(file, max) {
-    return new Promise((resolve, reject) => {
-      const url = URL.createObjectURL(file);
-      const img = new Image();
-      img.onload = () => {
-        const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
-        const c = document.createElement('canvas');
-        c.width = Math.round(img.naturalWidth * k);
-        c.height = Math.round(img.naturalHeight * k);
-        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-        URL.revokeObjectURL(url);
-        resolve(c.toDataURL('image/jpeg', 0.82));
-      };
-      img.onerror = () => {
-        URL.revokeObjectURL(url);
-        reject(new Error('사진을 읽을 수 없습니다. JPG나 PNG 파일로 올려 주세요.'));
-      };
-      img.src = url;
-    });
-  }
-  function imageSize(src) {
-    return new Promise((res, rej) => {
-      const i = new Image();
-      i.onload = () => res([i.naturalWidth, i.naturalHeight]);
-      i.onerror = rej;
-      i.src = src;
-    });
-  }
-
-  function validData(d) {
-    return d && typeof d === 'object' && d.ground && Array.isArray(d.buildings) &&
-      d.buildings.every((b) => b.id && Array.isArray(b.outline) && b.outline.length >= 3 && b.floors >= 1 && b.floorHeight > 0);
-  }
-
-  function setupAdmin() {
-    $('adminBadge').hidden = false;
-    $('toolbar').hidden = false;
-    $('btnGround').onclick = () => $('fileGround').click();
-    $('btnAdd').onclick = () => { if (drawing) endDraw(); startDraw(null); };
-    $('btnImport').onclick = () => $('fileImport').click();
-    $('drawUndo').onclick = () => { drawing.pts.pop(); updateDraw(); };
-    $('drawDone').onclick = finishDraw;
-    $('drawCancel').onclick = endDraw;
-
-    $('fileGround').onchange = async (e) => {
-      const f = e.target.files[0];
-      e.target.value = '';
-      if (!f) return;
-      try {
-        const image = await readImage(f, 2048);
-        const [iw, ih] = await imageSize(image);
-        const L = 240;
-        state.ground = iw >= ih
-          ? { width: L, height: Math.round(L * ih / iw), image, sample: false }
-          : { width: Math.round(L * iw / ih), height: L, image, sample: false };
-        buildGround();
-        touch();
-        viewTop();
-        toast('배치도를 올렸습니다. 건물 추가를 눌러 윤곽을 따라 그려 보세요.');
-      } catch (err) { toast(err.message || '사진을 읽을 수 없습니다.'); }
-    };
-
-    $('btnExport').onclick = () => {
-      const text = `window.SCHOOL_DATA = ${JSON.stringify(state)};\n`;
-      const a = el('a', { href: URL.createObjectURL(new Blob([text], { type: 'text/javascript' })), download: 'school-data.js' });
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-      toast('내려받은 school-data.js를 data 폴더의 같은 파일과 바꾸면 방문자 화면에 반영됩니다.');
-    };
-
-    $('fileImport').onchange = async (e) => {
-      const f = e.target.files[0];
-      e.target.value = '';
-      if (!f) return;
-      try {
-        const t = await f.text();
-        const d = JSON.parse(t.slice(t.indexOf('{'), t.lastIndexOf('}') + 1));
-        if (!validData(d)) throw new Error('invalid');
-        state = d;
-        selected = { id: null, floor: null };
-        buildGround();
-        rebuildAll();
-        renderPanel();
-        viewHome();
-        touch();
-      } catch (err) { toast('안내도 데이터 파일이 아닙니다.'); }
-    };
-
-    $('btnReset').onclick = async () => {
-      if (!confirm('이 브라우저의 편집 내용을 지우고 공개된 데이터로 되돌릴까요?')) return;
-      clearTimeout(saveTimer);
-      try { await store.set(null); } catch (err) { /* 저장소가 막힌 환경 */ }
-      state = clone(window.SCHOOL_DATA);
-      selected = { id: null, floor: null };
-      buildGround();
-      rebuildAll();
-      renderPanel();
-      viewHome();
-      $('saveState').textContent = '';
-    };
-  }
 
   /* ---------- 버튼 / 렌더 루프 ---------- */
-  $('btnHome').onclick = () => { if (drawing) return; clearSelection(); };
+  $('btnHome').onclick = clearSelection;
   $('btnTop').onclick = viewTop;
   $('btnSpin').onclick = (e) => {
     controls.autoRotate = !controls.autoRotate;
@@ -838,17 +494,7 @@
     updateLabels();
   }
 
-  async function init() {
-    if (ADMIN) {
-      setupAdmin();
-      try {
-        const draft = await store.get();
-        if (validData(draft)) {
-          state = draft;
-          $('saveState').textContent = '이 브라우저에 저장됨';
-        }
-      } catch (e) { toast('이 브라우저에서는 자동 저장을 쓸 수 없습니다.'); }
-    }
+  function init() {
     resize();
     buildGround();
     rebuildAll();
