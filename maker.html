@@ -86,6 +86,11 @@ button.danger { color: var(--danger); }
 .plan-room { position: absolute; min-height: 0; padding: 1px; overflow: hidden; border: 1px solid #5d686d; border-radius: 2px; color: var(--ink); font-size: 11px; font-weight: 700; line-height: 1.15; cursor: move; word-break: keep-all; }
 .plan-room.active { z-index: 2; border-color: #d92d20; box-shadow: inset 0 0 0 1px #d92d20; }
 .plan-handle { position: absolute; right: 0; bottom: 0; width: 13px; height: 13px; background: #d92d20; cursor: nwse-resize; }
+.plan-board { position: absolute; pointer-events: none; background: #2f5d4b; }
+.plan-board.back { top: 0; left: 14%; right: 14%; height: 4px; }
+.plan-board.front { bottom: 0; left: 14%; right: 14%; height: 4px; }
+.plan-board.left { left: 0; top: 14%; bottom: 14%; width: 4px; }
+.plan-board.right { right: 0; top: 14%; bottom: 14%; width: 4px; }
 .plan-preview { position: absolute; z-index: 3; pointer-events: none; background: rgb(23 105 92 / .35); border: 2px solid var(--accent); }
 .plan-preview.bad { background: rgb(217 45 32 / .35); border-color: #d92d20; }
 .plan-hall { padding: 3px; border: 2px solid #5d686d; border-top: 0; background: #dfe3df; color: var(--muted); font-size: 12px; text-align: center; }
@@ -175,8 +180,8 @@ button.danger { color: var(--danger); }
     stone: { g: 'prop', label: '기념비', w: 4, d: 2, color: '#8f8f88' },
     fence: { g: 'prop', label: '울타리', w: 12, d: .5, color: '#5e6a62' }
   };
-  const ROOM_TYPES = [['class', '교실'], ['lab', '특별실'], ['office', '사무실'], ['wc', '화장실'], ['elevator', '엘리베이터'], ['etc', '기타']];
-  const ROOM_TINT = { class: '#e6d6b8', lab: '#c9e0d8', office: '#d8dbe8', wc: '#cfe0ea', elevator: '#c5ccd0', etc: '#e4e1da' };
+  const ROOM_TYPES = [['class', '교실'], ['lab', '특별실'], ['office', '사무실'], ['wc', '화장실'], ['elevator', '엘리베이터'], ['stairs', '계단'], ['etc', '기타']];
+  const ROOM_TINT = { class: '#e6d6b8', lab: '#c9e0d8', office: '#d8dbe8', wc: '#cfe0ea', elevator: '#c5ccd0', stairs: '#ddd5c4', etc: '#e4e1da' };
   const DOOR_TYPES = [['center', '중앙현관'], ['door', '출입구'], ['exit', '비상구']];
   const DOOR_HALF = { center: 4.2, door: 1.5, exit: 1 };
   const DOOR_SIDES = [['front', '앞면'], ['back', '뒷면'], ['left', '왼쪽'], ['right', '오른쪽']];
@@ -289,6 +294,7 @@ button.danger { color: var(--danger); }
   function typeFor(name) {
     if (/화장실/.test(name)) return 'wc';
     if (/엘리베이터|승강기/.test(name)) return 'elevator';
+    if (/계단/.test(name)) return 'stairs';
     if (/반$|교실/.test(name)) return 'class';
     if (/행정|교무|교장|보건|상담|방송|준비/.test(name)) return 'office';
     if (/실$|강당|체육관/.test(name)) return 'lab';
@@ -419,10 +425,20 @@ button.danger { color: var(--danger); }
   }
   function distributeRooms(it, f, list) {
     const g = gridOf(it), cr = corridorRow(it, f);
-    const setRow = (rooms, r, rs) => rooms.forEach((room, i) => {
-      const c0 = Math.floor(i * g.cols / rooms.length), c1 = Math.floor((i + 1) * g.cols / rooms.length);
-      room.cell = c1 > c0 ? { c: c0, r, cs: c1 - c0, rs } : null;
-    });
+    const others = ((it.rooms && it.rooms[f]) || []).filter((o) => o.cell && !list.includes(o));
+    const setRow = (rooms, r, rs) => {
+      const free = [];
+      for (let c = 0; c < g.cols; c++) if (!others.some((o) => cellsOverlap(o.cell, { c, r, cs: 1, rs }))) free.push(c);
+      rooms.forEach((room, i) => {
+        const part = free.slice(Math.floor(i * free.length / rooms.length), Math.floor((i + 1) * free.length / rooms.length));
+        let best = [], run = [];
+        part.forEach((c) => {
+          run = run.length && run[run.length - 1] === c - 1 ? run.concat(c) : [c];
+          if (run.length > best.length) best = run;
+        });
+        room.cell = best.length ? { c: best[0], r, cs: best.length, rs } : null;
+      });
+    };
     if (cr > 0 && cr < g.rows) {
       const top = Math.ceil(list.length / 2);
       setRow(list.slice(0, top), 0, cr);
@@ -436,10 +452,25 @@ button.danger { color: var(--danger); }
     it.corridor[f] = kind;
     if (prev === kind) return;
     const rooms = it.rooms[f] || [], placed = rooms.filter((r) => r.cell);
+    const isFixed = (r) => ['elevator', 'wc', 'stairs'].includes(r.type);
+    const fixed = placed.filter(isFixed), normal = placed.filter((r) => !isFixed(r));
+    const cr = corridorRow(it, f), band = Math.max(cr, gridOf(it).rows - cr);
+    const anchorFixed = () => fixed.forEach((room) => {
+      const a = room.cell;
+      if (!a || a.r === cr || a.r + a.rs === cr) { if (!a || !crossesCorridor(it, f, a)) return; }
+      const rs = Math.min(a.rs, band);
+      const next = [cr - rs, cr].map((r) => ({ c: a.c, r, cs: a.cs, rs })).find((o) => fitsCell(it, f, o, room.id));
+      if (next) room.cell = next;
+      else if (crossesCorridor(it, f, a)) room.cell = null;
+    });
+    const redistribute = () => {
+      normal.forEach((r) => { r.cell = null; });
+      anchorFixed();
+      distributeRooms(it, f, normal);
+    };
     if (kind === 'center') {
-      if (placed.length && placed.every((r) => crossesCorridor(it, f, r.cell))) distributeRooms(it, f, placed);
+      if (normal.length && normal.every((r) => crossesCorridor(it, f, r.cell))) redistribute();
       else {
-        const cr = corridorRow(it, f);
         placed.filter((r) => crossesCorridor(it, f, r.cell)).forEach((room) => {
           const a = room.cell, up = cr - a.r, down = a.r + a.rs - cr;
           const options = (up >= down ? [{ c: a.c, r: a.r, cs: a.cs, rs: up }, { c: a.c, r: cr, cs: a.cs, rs: down }] : [{ c: a.c, r: cr, cs: a.cs, rs: down }, { c: a.c, r: a.r, cs: a.cs, rs: up }]);
@@ -447,10 +478,8 @@ button.danger { color: var(--danger); }
           room.cell = options.find((o) => fitsCell(it, f, o, room.id)) || null;
         });
       }
-    } else if (prev === 'center' && placed.length) {
-      placed.forEach((r) => { r.cell = null; });
-      distributeRooms(it, f, placed);
-    }
+    } else if (prev === 'center' && normal.length) redistribute();
+    anchorFixed();
   }
   function fitsCell(it, f, cell, exceptId) {
     const g = gridOf(it);
@@ -1226,7 +1255,9 @@ button.danger { color: var(--danger); }
   let interior = null;
   const roomsOf = (it, f) => (it.rooms && it.rooms[f]) || [];
   const roomCode = (f, i) => `${f + 1}${String(i + 1).padStart(2, '0')}`;
-  const roomBadge = (room, f, i) => (room.type === 'elevator' ? 'EV' : room.type === 'wc' ? 'WC' : roomCode(f, i));
+  const roomBadge = (room, f, i) => (room.type === 'elevator' ? 'EV' : room.type === 'wc' ? 'WC' : room.type === 'stairs' ? 'ST' : roomCode(f, i));
+  const FIXED_ROOMS = ['elevator', 'wc', 'stairs'];
+  const boardOf = (room, door) => room.board || (door.side === 'back' ? 'front' : 'back');
 
   function drawPlate(c, code, name, trim) {
     const g = c.getContext('2d'), W = c.width, H = c.height, bandW = 150;
@@ -1279,7 +1310,55 @@ button.danger { color: var(--danger); }
     m.position.set(x, y, z);
     parent.add(m);
   }
-  function furnish(parent, room, x0, z0, rw, rd, doorSide) {
+  function roomFrame(x0, z0, rw, rd, side) {
+    const turned = side === 'left' || side === 'right';
+    const W = turned ? rd : rw, L = turned ? rw : rd;
+    const pt = (u, v) => {
+      if (side === 'back') return [x0 + u, z0 + v];
+      if (side === 'front') return [x0 + u, z0 + rd - v];
+      if (side === 'left') return [x0 + v, z0 + u];
+      return [x0 + rw - v, z0 + u];
+    };
+    const put = (p, uLen, h, vLen, mat, u, y, v) => {
+      const [x, z] = pt(u, v);
+      box(p, turned ? vLen : uLen, h, turned ? uLen : vLen, mat, x, y, z, true);
+    };
+    return { W, L, pt, put, turned };
+  }
+  function buildStairs(parent, x0, z0, rw, rd, side, isTop) {
+    const fr = roomFrame(x0, z0, rw, rd, side), { W, L, put } = fr;
+    const H = 3.2, entry = .5, landing = clamp(L * .28, .9, 1.5), run = Math.max(1, L - entry - landing - .08);
+    const fw = Math.max(.5, (W - .56) / 2), uA = .2 + fw / 2, uB = W - .2 - fw / 2;
+    const n = clamp(Math.floor(run / .28), 4, 12), tread = run / n;
+    const stepM = (i) => M(i % 2 ? '#bdb5a3' : '#d3ccbc'), railM = M('#59666b');
+    if (isTop) {
+      const shades = ['#d3ccbc', '#b5ae9f', '#958f83', '#767269', '#5a5750'];
+      [uA, uB].forEach((u, k) => {
+        for (let i = 0; i < n; i++) {
+          const depth = k === 0 ? i : n - 1 - i;
+          put(parent, fw, .03, tread - .03, M(shades[Math.min(4, Math.floor(depth * 5 / n))]), u, .14, entry + tread * (i + .5));
+        }
+      });
+      put(parent, W - .3, .04, landing, M('#d3ccbc'), W / 2, .13, entry + run + landing / 2);
+      put(parent, .1, 1, run, railM, W / 2, .62, entry + run / 2);
+      put(parent, fw, 1, .08, railM, uB, .62, entry);
+      flatLabel(parent, '계단', ...(() => { const [x, z] = fr.pt(W / 2, entry + run + landing / 2); return [x, .17, z]; })(), Math.min(W * .6, landing * 2.4), '#59666b');
+      return;
+    }
+    for (let i = 0; i < n; i++) {
+      const top = (i + 1) / n * H / 2;
+      put(parent, fw, top, tread, stepM(i), uA, .12 + top / 2, entry + tread * (i + .5));
+      const y = H / 2 + (i + 1) / n * H / 2;
+      put(parent, fw, .24, tread, stepM(i), uB, y, entry + run - tread * (i + .5));
+    }
+    put(parent, W - .3, H / 2, landing, M('#c9c2b2'), W / 2, .12 + H / 4, entry + run + landing / 2);
+    put(parent, .12, H, run, M('#8d9498'), W / 2, .12 + H / 2, entry + run / 2);
+    const [lx, lz] = fr.pt(W / 2, entry + run + landing / 2);
+    flatLabel(parent, '계단', lx, H / 2 + .15, lz, Math.min(W * .6, landing * 2.4), '#59666b');
+  }
+  function furnish(parent, room, x0, z0, rw, rd, door, isTop) {
+    const doorSide = door.side;
+    if (room.type === 'stairs') { buildStairs(parent, x0, z0, rw, rd, doorSide, isTop); return; }
     if (room.type === 'elevator') {
       const cw = Math.max(.8, rw - .7), cd = Math.max(.8, rd - .7);
       box(parent, cw, 2.5, cd, M('#aeb7bb'), x0 + rw / 2, 1.37, z0 + rd / 2);
@@ -1297,16 +1376,29 @@ button.danger { color: var(--danger); }
     const add = (list, x, z) => list.push([x, z]);
     const desks = [], chairs = [], tables = [];
     const ix0 = x0 + .8, iw = rw - 1.6, iz0 = z0 + 1.7, id = rd - 2.5;
-    if (iw < 1.4 || id < 1) return;
+    let turned = false;
     if (room.type === 'class') {
-      const cols = clamp(Math.floor(iw / 1.35), 1, 7), rows = clamp(Math.floor(id / 1.3), 1, 6);
-      for (let c = 0; c < cols; c++) for (let r = 0; r < rows; r++) {
-        const x = ix0 + iw * (c + .5) / cols, z = iz0 + id * (r + .5) / rows;
-        add(desks, x, z); add(chairs, x, z + .42);
+      const side = boardOf(room, door), fr = roomFrame(x0, z0, rw, rd, side), { W, L } = fr;
+      turned = fr.turned;
+      let from = 0, to = W;
+      if (side === doorSide) {
+        const doorU = fr.turned ? door.z - z0 : door.x - x0;
+        const before = doorU - .85, after = W - doorU - .85;
+        if (Math.max(before, after) >= 1.6) { if (before >= after) to = before; else from = doorU + .85; }
       }
-      box(parent, Math.min(rw * .55, 6), 1.2, .06, M('#2f5d4b'), x0 + rw / 2, 1.75, z0 + .2, true);
-      box(parent, 1.5, .8, .6, M('#8a6a4c'), x0 + rw / 2, .46, z0 + 1.05, true);
-    } else if (room.type === 'lab') {
+      const span = to - from, mid = (from + to) / 2;
+      fr.put(parent, Math.min(span * .9, W * .55, 6), 1.2, .06, M('#2f5d4b'), mid, 1.75, .2);
+      fr.put(parent, Math.min(1.5, span * .8), .8, .6, M('#8a6a4c'), mid, .46, 1.05);
+      const uw = W - 1.6, vd = L - 2.5;
+      if (uw < 1.4 || vd < 1) return;
+      const cols = clamp(Math.floor(uw / 1.35), 1, 7), rows = clamp(Math.floor(vd / 1.3), 1, 6);
+      for (let c = 0; c < cols; c++) for (let r = 0; r < rows; r++) {
+        const u = .8 + uw * (c + .5) / cols, v = 1.7 + vd * (r + .5) / rows;
+        const [dx, dz] = fr.pt(u, v), [cx, cz] = fr.pt(u, v + .42);
+        add(desks, dx, dz); add(chairs, cx, cz);
+      }
+    } else if (iw < 1.4 || id < 1) return;
+    else if (room.type === 'lab') {
       const cols = clamp(Math.floor(iw / 3.4), 1, 5), rows = clamp(Math.floor(id / 2.5), 1, 4);
       for (let c = 0; c < cols; c++) for (let r = 0; r < rows; r++) add(tables, ix0 + iw * (c + .5) / cols, iz0 + id * (r + .5) / rows);
     } else if (room.type === 'office') {
@@ -1325,7 +1417,7 @@ button.danger { color: var(--danger); }
       m.instanceMatrix.needsUpdate = true;
       parent.add(m);
     };
-    inst(desks, .85, .72, .55, .42, '#b58e62');
+    inst(desks, turned ? .55 : .85, .72, turned ? .85 : .55, .42, '#b58e62');
     inst(chairs, .4, .46, .4, .3, '#55707c');
     inst(tables, 2.4, .86, 1.3, .49, '#6d8a84');
   }
@@ -1390,11 +1482,16 @@ button.danger { color: var(--danger); }
       if (!room.cell) return;
       const r = roomRect(it, room, f), door = doorOf(it, f, room);
       box(g, r.w - .16, .02, r.d - .16, M(ROOM_TINT[room.type] || ROOM_TINT.etc), r.cx, .115, r.cz, true);
-      box(g, r.w, h, .16, wallM, r.cx, h / 2, r.z0);
-      box(g, r.w, h, .16, wallM, r.cx, h / 2, r.z1);
-      box(g, .16, h, r.d, wallM, r.x0, h / 2, r.cz);
-      box(g, .16, h, r.d, wallM, r.x1, h / 2, r.cz);
-      furnish(g, room, r.x0, r.z0, r.w, r.d, door.side);
+      const openSide = room.type === 'stairs' ? door.side : null, headH = Math.max(.3, h - 2.35);
+      const wall = (side, sx, sz, x, z) => {
+        if (side === openSide) box(g, sx, headH, sz, wallM, x, h - headH / 2, z);
+        else box(g, sx, h, sz, wallM, x, h / 2, z);
+      };
+      wall('back', r.w, .16, r.cx, r.z0);
+      wall('front', r.w, .16, r.cx, r.z1);
+      wall('left', .16, r.d, r.x0, r.cz);
+      wall('right', .16, r.d, r.x1, r.cz);
+      furnish(g, room, r.x0, r.z0, r.w, r.d, door, f === it.floors - 1);
       const dg = new THREE.Group();
       dg.position.set(door.x, 0, door.z);
       dg.rotation.y = door.ry;
@@ -1402,13 +1499,13 @@ button.danger { color: var(--danger); }
         box(dg, 1.75, 2.35, .08, M('#6d777b'), 0, 1.3, .1, true);
         [-.4, .4].forEach((x) => box(dg, .76, 2.2, .06, M('#c8d0d3'), x, 1.24, .15, true));
         box(dg, .12, .2, .05, M('#2f4148'), 1.05, 1.25, .12, true);
-      } else {
+      } else if (room.type !== 'stairs') {
         box(dg, 1.15, 2.15, .08, M(room.type === 'wc' ? '#5f8fa5' : '#7c5a3c'), 0, 1.2, .12, true);
         box(dg, .34, .62, .09, M('#a8cbd8'), .22, 1.62, .125, true);
       }
       addPlate(dg, it, f, i, room, 0, .09, st);
       g.add(dg);
-      if ((door.side === 'front' || door.side === 'back') && r.w > 5) {
+      if (room.type !== 'stairs' && (door.side === 'front' || door.side === 'back') && r.w > 5) {
         const winX = door.x > r.cx ? r.x0 + r.w * .27 : r.x0 + r.w * .73;
         if (Math.abs(winX - door.x) > 2.2) box(g, Math.min(r.w * .32, 4), .95, .06, M('#a8cbd8'), winX, 1.75, door.side === 'front' ? r.z1 + .1 : r.z0 - .1, true);
       }
@@ -2139,36 +2236,63 @@ button.danger { color: var(--danger); }
       const h = b.querySelector('.plan-handle');
       if (h) h.hidden = !on;
     });
+    const editor = p.querySelector('[data-board-editor]');
+    if (editor) editor.replaceWith(boardEditor(it, f));
     if (plateRoom) viewFloor(it, f);
     else updateMarker();
+  }
+  function boardEditor(it, f) {
+    const wrap = el('div', { 'data-board-editor': '' });
+    const room = roomsOf(it, f).find((r) => r.id === focus.room);
+    if (!room || room.type !== 'class' || !room.cell) {
+      wrap.append(el('p', { class: 'plan-note' }, '종류가 교실인 항목을 선택하면 칠판 위치와 책상 방향을 바꿀 수 있습니다.'));
+      return wrap;
+    }
+    const current = boardOf(room, doorOf(it, f, room));
+    const after = () => { refreshRooms(); if (plateRoom) viewFloor(it, f); };
+    const sides = [['back', '위쪽'], ['front', '아래쪽'], ['left', '왼쪽'], ['right', '오른쪽']];
+    wrap.append(el('h3', {}, `${room.name} 칠판 위치`), el('div', { class: 'chips', role: 'group', 'aria-label': '칠판 위치' }, sides.map(([side, label]) => el('button', {
+      class: 'chip', type: 'button', 'aria-pressed': current === side,
+      onclick: () => { if (current !== side) { room.board = side; after(); } }
+    }, label))));
+    const others = roomsOf(it, f).filter((r) => r.type === 'class' && r.cell && r !== room);
+    if (others.length) wrap.append(el('button', { class: 'wide', type: 'button', onclick: () => {
+      others.forEach((r) => { r.board = current; });
+      room.board = current;
+      after();
+      toast(`${f + 1}층 교실 ${others.length + 1}개의 칠판 방향을 맞췄습니다.`);
+    } }, '이 칠판 방향을 이 층 모든 교실에 적용'));
+    return wrap;
   }
   function facilitySize(it, type) {
     const g = gridOf(it);
     if (type === 'elevator') return { cs: 1, rs: clamp(Math.round(4 / g.ch), 1, 2) };
+    if (type === 'stairs') return { cs: 1, rs: clamp(Math.round(6 / g.ch), 1, 2) };
     return { cs: clamp(Math.round(6 / g.cw), 1, 2), rs: clamp(Math.round(8 / g.ch), 1, 2) };
   }
   function facilitySpot(it, f, type) {
-    const g = gridOf(it), { cs, rs } = facilitySize(it, type), cr = corridorRow(it, f);
-    const rowsToTry = [];
+    const g = gridOf(it), size = facilitySize(it, type), cs = size.cs, cr = corridorRow(it, f);
+    const rs = it.outline ? size.rs : Math.min(size.rs, Math.max(cr, g.rows - cr));
+    const fromLeft = type === 'stairs', rowsToTry = [];
     if (it.outline) for (let r = g.rows - rs; r >= 0; r--) rowsToTry.push(r);
     else {
       if (cr >= rs) rowsToTry.push(cr - rs);
       if (cr + rs <= g.rows) rowsToTry.push(cr);
     }
     for (const r of rowsToTry) {
-      for (let c = g.cols - cs; c >= 0; c--) {
-        const cell = { c, r, cs, rs };
+      for (let k = 0; k <= g.cols - cs; k++) {
+        const cell = { c: fromLeft ? k : g.cols - cs - k, r, cs, rs };
         if (fitsCell(it, f, cell)) return cell;
       }
     }
-    const donors = roomsOf(it, f).filter((o) => o.cell && o.cell.cs > cs && o.type !== 'elevator' && o.type !== 'wc' && (it.outline || o.cell.r + o.cell.rs === cr || o.cell.r === cr));
+    const donors = roomsOf(it, f).filter((o) => o.cell && o.cell.cs > cs && !FIXED_ROOMS.includes(o.type) && (it.outline || o.cell.r + o.cell.rs === cr || o.cell.r === cr));
     donors.sort((a, b) => b.cell.cs * b.cell.rs - a.cell.cs * a.cell.rs);
     for (const donor of donors) {
       const a = donor.cell, height = Math.min(rs, a.rs);
       const r = !it.outline && a.r + a.rs === cr ? a.r + a.rs - height : a.r;
-      const cell = { c: a.c + a.cs - cs, r, cs, rs: height };
+      const cell = { c: fromLeft ? a.c : a.c + a.cs - cs, r, cs, rs: height };
       const saved = donor.cell;
-      donor.cell = { c: a.c, r: a.r, cs: a.cs - cs, rs: a.rs };
+      donor.cell = { c: fromLeft ? a.c + cs : a.c, r: a.r, cs: a.cs - cs, rs: a.rs };
       if (fitsCell(it, f, cell)) return cell;
       donor.cell = saved;
     }
@@ -2179,7 +2303,7 @@ button.danger { color: var(--danger); }
     const conflicts = roomsOf(it, f).filter((o) => o.cell && cellsOverlap(o.cell, target));
     const plans = [];
     for (const room of conflicts) {
-      if (room.type === 'elevator' || room.type === 'wc') return false;
+      if (FIXED_ROOMS.includes(room.type)) return false;
       const a = room.cell, left = target.c - a.c, right = a.c + a.cs - (target.c + target.cs);
       if (left <= 0 && right <= 0) return false;
       plans.push([room, left >= right ? { c: a.c, r: a.r, cs: left, rs: a.rs } : { c: target.c + target.cs, r: a.r, cs: right, rs: a.rs }]);
@@ -2196,7 +2320,7 @@ button.danger { color: var(--danger); }
     return `${base} ${n}`;
   }
   function addFacility(it, floor, type, allFloors) {
-    const base = type === 'elevator' ? '엘리베이터' : '화장실';
+    const base = type === 'elevator' ? '엘리베이터' : type === 'stairs' ? '계단' : '화장실';
     let floors = allFloors ? Array.from({ length: it.floors }, (_, n) => n) : [floor];
     if (allFloors && type === 'wc') {
       floors = floors.filter((n) => !roomsOf(it, n).some((r) => r.type === 'wc'));
@@ -2311,7 +2435,7 @@ button.danger { color: var(--danger); }
           const again = $('panel').querySelector(`[data-plan-room="${room.id}"]`);
           if (again) again.focus();
         }
-      }, room.type === 'elevator' ? 'EV' : room.name, el('span', { class: 'plan-handle', hidden: !on }));
+      }, room.type === 'elevator' ? 'EV' : room.name, room.type === 'class' ? el('span', { class: `plan-board ${boardOf(room, doorOf(it, f, room))}` }) : null, el('span', { class: 'plan-handle', hidden: !on }));
       b.title = room.name;
       b.dataset.planRoom = room.id;
       b.style.background = ROOM_TINT[room.type] || ROOM_TINT.etc;
@@ -2438,12 +2562,14 @@ button.danger { color: var(--danger); }
       }
     }
     p.append(el('h3', {}, `${f + 1}층 평면`), planEl(it, f));
-    p.append(el('p', { class: 'plan-note' }, '빈칸을 누르거나 끌면 교실이 생기고, 교실을 끌면 옮겨집니다. 빨간 모서리를 끌면 크기가 바뀝니다.'));
+    p.append(el('p', { class: 'plan-note' }, '빈칸을 누르거나 끌면 교실이 생기고, 교실을 끌면 옮겨집니다. 빨간 모서리를 끌면 크기가 바뀝니다. 초록 선은 칠판 위치입니다.'));
+    p.append(boardEditor(it, f));
     const rooms = roomsOf(it, f);
     p.append(el('h3', {}, '시설 넣기'), el('div', { class: 'actions', style: 'margin-top:0' },
       el('button', { type: 'button', onclick: () => addFacility(it, f, 'wc', false) }, `화장실 (${f + 1}층)`),
       it.floors > 1 ? el('button', { type: 'button', onclick: () => addFacility(it, f, 'wc', true) }, '화장실 (모든 층)') : null,
-      el('button', { type: 'button', onclick: () => addFacility(it, f, 'elevator', true) }, '엘리베이터')));
+      el('button', { type: 'button', onclick: () => addFacility(it, f, 'elevator', true) }, '엘리베이터'),
+      el('button', { type: 'button', disabled: it.floors < 2, title: it.floors < 2 ? '2층 이상 건물에 넣을 수 있습니다.' : '모든 층의 복도 쪽 같은 위치에 넣습니다.', onclick: () => addFacility(it, f, 'stairs', true) }, '계단')));
     p.append(el('h3', {}, `${f + 1}층 교실`));
     const unplaced = rooms.filter((r) => !r.cell).length;
     if (unplaced) p.append(el('p', { class: 'warn' }, `위치 미지정 ${unplaced}개: 교실을 선택한 뒤 격자의 빈칸을 눌러 주세요.`));
@@ -2887,7 +3013,7 @@ button.danger { color: var(--danger); }
     buildings().forEach((b) => {
       if (b.name.toLowerCase().includes(q)) hits.push({ b, f: null, room: null, text: b.name, sub: '건물' });
       for (let f = 0; f < b.floors; f++) roomsOf(b, f).forEach((r) => {
-        const word = r.type === 'wc' ? '화장실' : r.type === 'elevator' ? '엘리베이터 승강기 ev' : '';
+        const word = r.type === 'wc' ? '화장실' : r.type === 'elevator' ? '엘리베이터 승강기 ev' : r.type === 'stairs' ? '계단 stairs' : '';
         if (r.name.toLowerCase().includes(q) || word.includes(q)) hits.push({ b, f, room: r, text: r.name, sub: `${b.name} ${f + 1}층${r.cell ? '' : ' · 위치 미지정'}` });
       });
       (b.doors || []).forEach((d) => {
