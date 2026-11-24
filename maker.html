@@ -98,6 +98,7 @@ button.danger { color: var(--danger); }
 .plan-board.left { left: 0; top: 14%; bottom: 14%; width: 4px; }
 .plan-board.right { right: 0; top: 14%; bottom: 14%; width: 4px; }
 .plan-preview { position: absolute; z-index: 3; pointer-events: none; background: rgb(23 105 92 / .35); border: 2px solid var(--accent); }
+.plan-preview.insert { background: rgb(47 111 179 / .3); border: 2px dashed #2f6fb3; }
 .plan-preview.bad { background: rgb(217 45 32 / .35); border-color: #d92d20; }
 .plan-hall { padding: 3px; border: 2px solid #5d686d; border-top: 0; background: #dfe3df; color: var(--muted); font-size: 12px; text-align: center; }
 .plan-note { margin: 6px 0 0 !important; font-size: 13px !important; }
@@ -2473,6 +2474,63 @@ button.danger { color: var(--danger); }
       toast(`건물 가로가 ${oldW}m에서 ${it.w}m로 바뀌었습니다.`);
     } else refreshRooms();
   }
+  function insertRoom(it, f, room, target, pointerCol) {
+    if (crossesCorridor(it, f, target)) return '복도를 가로질러 놓을 수 없습니다.';
+    const saved = JSON.stringify(it.rooms), oldW = it.w, old = room.cell;
+    const rowsHit = (a, b) => a.r < b.r + b.rs && b.r < a.r + a.rs;
+    const prevNeed = neededCols(it), cols0 = gridFor(it.w, it.d, !!it.outline).cols;
+    const others = roomsOf(it, f).filter((r) => r.cell && r !== room);
+    const isFixed = (r) => FIXED_ROOMS.includes(r.type);
+    const mid = pointerCol !== undefined ? pointerCol + .5 : target.c + target.cs / 2;
+    let lo = -Infinity, hi = Infinity;
+    others.forEach((r) => {
+      if (isFixed(r) || !cellsOverlap(r.cell, target)) return;
+      if (mid < r.cell.c + r.cell.cs / 2) hi = Math.min(hi, r.cell.c - .5);
+      else lo = Math.max(lo, r.cell.c + .5);
+    });
+    const fixedCells = others.filter(isFixed).map((r) => r.cell);
+    const blocked = (cell, from, to) => {
+      let n = 0;
+      for (let col = from; col < to; col++) {
+        const inFixed = fixedCells.some((p) => rowsHit(p, cell) && col >= p.c && col < p.c + p.cs);
+        const inOld = rowsHit(old, cell) && col >= old.c && col < old.c + old.cs;
+        if (inFixed || inOld) n++;
+      }
+      return n;
+    };
+    const normal = others.filter((r) => !isFixed(r)).sort((x, y) => x.cell.c - y.cell.c);
+    const items = normal.map((r, i) => {
+      const prevEnd = normal.slice(0, i).filter((o) => rowsHit(o.cell, r.cell)).reduce((m, o) => Math.max(m, o.cell.c + o.cell.cs), 0);
+      let gap = 0;
+      for (let col = r.cell.c - 1; col >= prevEnd && !blocked(r.cell, col, col + 1); col--) gap++;
+      return { r, k: r.cell.c, cell: r.cell, gap };
+    });
+    items.push({ r: room, k: Math.min(Math.max(target.c, lo), hi), cell: target, gap: 0 });
+    items.sort((x, y) => x.k - y.k);
+    const placed = fixedCells.slice(), done = [];
+    items.forEach((x) => {
+      let c = done.filter((d) => rowsHit(d, x.cell)).reduce((m, d) => Math.max(m, d.c + d.cs), 0) + x.gap;
+      while (c < MAX_COLS + 8 && placed.some((p) => cellsOverlap(p, { c, r: x.cell.r, cs: x.cell.cs, rs: x.cell.rs }))) c++;
+      const cell = { c, r: x.cell.r, cs: x.cell.cs, rs: x.cell.rs };
+      placed.push(cell);
+      done.push(cell);
+      x.next = cell;
+    });
+    items.forEach((x) => { x.r.cell = x.next; });
+    const fail = (msg) => { it.rooms = JSON.parse(saved); return msg; };
+    if (!roomsValid(it)) return fail('그 자리에는 놓을 수 없습니다.');
+    if (it.outline) {
+      const g = gridOf(it);
+      if (!roomsOf(it, f).every((r) => !r.cell || (insideGrid(r.cell, g) && cellInMask(r.cell, g)))) return fail('꺾인 건물 안에 자리가 부족합니다.');
+    } else {
+      const need = neededCols(it);
+      if (need > MAX_COLS) return fail(`건물 가로는 교실 ${MAX_COLS / 2}칸까지 늘릴 수 있습니다.`);
+      const cols = need > cols0 ? need : (prevNeed >= cols0 ? Math.max(need, 2) : cols0);
+      if (!fitBuildingWidth(it, cols)) return fail('옆 건물이나 부지 경계에 막혀 건물을 늘릴 수 없습니다.');
+    }
+    if (it.w !== oldW) rebuildItem(it);
+    return '';
+  }
   function placeNewRoom(it, f, room) {
     const cell = autoCell(it, f, room.id);
     if (it.outline || (cell && cell.cs >= 2)) return cell;
@@ -2589,15 +2647,22 @@ button.danger { color: var(--danger); }
       if (!gesture) return;
       const [c, r] = cellAt(e), a = gesture;
       let rect;
-      if (a.mode === 'move') rect = { c: clamp(a.base.c + c - a.c, 0, g.cols - a.base.cs), r: clamp(a.base.r + r - a.r, 0, g.rows - a.base.rs), cs: a.base.cs, rs: a.base.rs };
+      if (a.mode === 'move') {
+        rect = { c: clamp(a.base.c + c - a.c, 0, g.cols - a.base.cs), r: clamp(a.base.r + r - a.r, 0, g.rows - a.base.rs), cs: a.base.cs, rs: a.base.rs };
+        if (crossesCorridor(it, f, rect)) rect.r = r >= cr ? Math.min(cr, g.rows - rect.rs) : Math.max(0, cr - rect.rs);
+      }
       else if (a.mode === 'resize') rect = { c: a.base.c, r: a.base.r, cs: Math.max(1, c - a.base.c + 1), rs: Math.max(1, r - a.base.r + 1) };
       else rect = { c: Math.min(a.c, c), r: Math.min(a.r, r), cs: Math.abs(c - a.c) + 1, rs: Math.abs(r - a.r) + 1 };
+      a.pc = c;
       if (c !== a.c || r !== a.r) a.moved = true;
       a.rect = rect;
       if (!a.moved) return;
       place(preview, rect);
       preview.hidden = false;
-      preview.classList.toggle('bad', !fitsCell(it, f, rect, a.room ? a.room.id : null));
+      const fits = fitsCell(it, f, rect, a.room ? a.room.id : null);
+      const canInsert = !fits && a.mode === 'move' && !FIXED_ROOMS.includes(a.room.type) && !crossesCorridor(it, f, rect);
+      preview.classList.toggle('insert', canInsert);
+      preview.classList.toggle('bad', !fits && !canInsert);
     });
     const finish = (e) => {
       if (!gesture) return;
@@ -2616,7 +2681,18 @@ button.danger { color: var(--danger); }
           }
         }
       }
-      if (!rect || !fitsCell(it, f, rect, a.room ? a.room.id : null)) { toast('다른 교실과 겹치거나 건물 밖인 자리입니다.'); return; }
+      if (!rect || !fitsCell(it, f, rect, a.room ? a.room.id : null)) {
+        if (rect && a.mode === 'move' && !FIXED_ROOMS.includes(a.room.type)) {
+          const widthBefore = it.w, err = insertRoom(it, f, a.room, rect, a.pc);
+          if (err) { toast(err); renderPanel(); return; }
+          focus.room = a.room.id;
+          refreshRooms();
+          if (it.w !== widthBefore) { updateSelection(); viewFloor(it, f); toast(`건물 가로가 ${widthBefore}m에서 ${it.w}m로 바뀌었습니다.`); }
+          return;
+        }
+        toast(a.mode === 'move' ? '계단, 화장실, 엘리베이터는 빈칸으로만 옮길 수 있습니다.' : '다른 교실과 겹치거나 건물 밖인 자리입니다.');
+        return;
+      }
       let room = a.room, created = false;
       if (!room) {
         room = { id: uid(), name: `새 교실 ${rooms.length + 1}`, type: 'class' };
@@ -2677,7 +2753,7 @@ button.danger { color: var(--danger); }
       }
     }
     p.append(el('h3', {}, `${f + 1}층 평면`), planEl(it, f));
-    p.append(el('p', { class: 'plan-note' }, '빈칸을 누르거나 끌면 교실이 생기고, 교실을 끌면 옮겨집니다. 빨간 모서리를 끌면 크기가 바뀝니다. 초록 선은 칠판 위치입니다.'));
+    p.append(el('p', { class: 'plan-note' }, '빈칸을 누르거나 끌면 교실이 생기고, 교실을 끌면 옮겨집니다. 다른 교실 위에 놓으면 그 자리에 끼워 넣고 나머지가 밀립니다. 빨간 모서리를 끌면 크기가 바뀝니다. 초록 선은 칠판 위치입니다.'));
     p.append(boardEditor(it, f));
     const rooms = roomsOf(it, f);
     p.append(el('h3', {}, '시설 넣기'), el('div', { class: 'actions', style: 'margin-top:0' },
