@@ -30,6 +30,7 @@ button:disabled { opacity: .45; cursor: default; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
 button.danger { color: var(--danger); }
 .layout { flex: 1; min-height: 0; display: grid; grid-template-columns: 370px minmax(0, 1fr); }
+.layout.half { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 .panel { overflow-y: auto; padding: 18px 16px 28px; background: var(--surface); border-right: 1px solid var(--line); }
 .panel h2 { margin: 0 0 4px; font-size: 21px; }
 .panel h3 { margin: 20px 0 8px; font-size: 15px; }
@@ -135,6 +136,7 @@ button.danger { color: var(--danger); }
   .steps button { white-space: nowrap; padding: 0 7px; }
   .tools { margin-left: auto; }
   .layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(220px, 45%); }
+  .layout.half { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
   .stage { grid-row: 1; }
   .panel { grid-row: 2; border-right: 0; border-top: 1px solid var(--line); }
   .cards { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -1669,6 +1671,8 @@ button.danger { color: var(--danger); }
     cancelPlace();
     const prev = step;
     step = s;
+    document.querySelector('.layout').classList.toggle('half', s === 'rooms');
+    resize();
     plateRoom = null;
     focus = { id: null, floor: null, room: null };
     if (s === 'rooms') {
