@@ -959,14 +959,38 @@ button.danger { color: var(--danger); }
     g.scale(s, s);
     g.lineWidth = .3;
     if (kind === 'field') {
-      g.fillStyle = '#c0694e'; rr(g, 0, 0, w, d, d / 2); g.fill();
-      g.fillStyle = '#73aa5e'; rr(g, 8, 8, w - 16, d - 16, (d - 16) / 2); g.fill();
-      g.strokeStyle = 'rgba(255,255,255,.8)';
-      [2.7, 5.4].forEach((m) => { rr(g, m, m, w - m * 2, d - m * 2, (d - m * 2) / 2); g.stroke(); });
-      g.strokeStyle = '#fff'; g.lineWidth = .4;
-      g.strokeRect(w * .18, 11, w * .64, d - 22);
-      g.beginPath(); g.moveTo(w / 2, 11); g.lineTo(w / 2, d - 11); g.stroke();
-      g.beginPath(); g.arc(w / 2, d / 2, Math.min(7, d * .13), 0, Math.PI * 2); g.stroke();
+      const track = it.fieldTrack !== false && d >= 30 && w >= 40, dirt = it.fieldSurface === 'dirt';
+      const surf = dirt ? '#c9a473' : '#73aa5e';
+      if (track) {
+        g.fillStyle = '#c0694e'; rr(g, 0, 0, w, d, d / 2); g.fill();
+        g.fillStyle = surf; rr(g, 8, 8, w - 16, d - 16, (d - 16) / 2); g.fill();
+      } else {
+        g.fillStyle = surf; rr(g, 0, 0, w, d, Math.min(3, d * .06)); g.fill();
+      }
+      if (dirt) {
+        g.fillStyle = 'rgba(120,86,50,.16)';
+        for (let i = 0; i < 260; i++) {
+          const x = ((i * 53) % 101) / 101 * w, y = ((i * 37) % 97) / 97 * d;
+          if (track && Math.hypot((x - w / 2) / (w / 2 - 9), (y - d / 2) / (d / 2 - 9)) > 1.05 && (x < d / 2 || x > w - d / 2)) continue;
+          g.beginPath(); g.arc(x, y, .25 + (i % 4) * .12, 0, Math.PI * 2); g.fill();
+        }
+      } else {
+        g.fillStyle = 'rgba(255,255,255,.07)';
+        const x0 = track ? 8 : 0, x1 = track ? w - 8 : w;
+        for (let x = x0, k = 0; x < x1; x += 4, k++) if (k % 2) g.fillRect(x, track ? 8 : 0, Math.min(4, x1 - x), track ? d - 16 : d);
+      }
+      if (track) {
+        g.strokeStyle = 'rgba(255,255,255,.8)'; g.lineWidth = .3;
+        [2.7, 5.4].forEach((m) => { rr(g, m, m, w - m * 2, d - m * 2, (d - m * 2) / 2); g.stroke(); });
+      }
+      g.strokeStyle = dirt ? 'rgba(255,255,255,.85)' : '#fff'; g.lineWidth = .4;
+      const px = track ? w * .18 : 3, py = track ? 11 : 3, pw = track ? w * .64 : w - 6, ph = track ? d - 22 : d - 6;
+      g.strokeRect(px, py, pw, ph);
+      g.beginPath(); g.moveTo(px + pw / 2, py); g.lineTo(px + pw / 2, py + ph); g.stroke();
+      g.beginPath(); g.arc(px + pw / 2, py + ph / 2, Math.min(7, ph * .16), 0, Math.PI * 2); g.stroke();
+      const bw = Math.min(14, pw * .16), bh = Math.min(30, ph * .55);
+      g.strokeRect(px, py + (ph - bh) / 2, bw, bh);
+      g.strokeRect(px + pw - bw, py + (ph - bh) / 2, bw, bh);
     } else if (kind === 'court') {
       g.fillStyle = '#4f86a8'; g.fillRect(0, 0, w, d);
       g.fillStyle = '#d98d55'; g.fillRect(1.2, 1.2, w - 2.4, d - 2.4);
@@ -2330,6 +2354,13 @@ button.danger { color: var(--danger); }
         oninput: (e) => { const b = built.get(it.id); if (b.pin) b.pin.textContent = e.target.value; },
         onchange: (e) => changeItem(it, { name: e.target.value.trim() || c.label }) })));
       box_.append(numField('문 너비(m)', it.w, 6, 40, 2, (v) => changeItem(it, { w: v })));
+    }
+    if (it.kind === 'field') {
+      const canTrack = it.d >= 30 && it.w >= 40;
+      const trackBox = el('input', { type: 'checkbox', checked: it.fieldTrack !== false && canTrack, onchange: (e) => changeItem(it, { fieldTrack: e.target.checked }) });
+      trackBox.disabled = !canTrack;
+      box_.append(field('운동장 바닥', selectEl(it.fieldSurface || 'grass', [['grass', '잔디'], ['dirt', '흙 (마사토)']], (v) => changeItem(it, { fieldSurface: v }), '운동장 바닥')),
+        el('label', { class: 'check' }, trackBox, canTrack ? ' 육상 트랙 두르기' : ' 육상 트랙 (가로 40m, 세로 30m 이상일 때)'));
     }
     if (c.g === 'building') {
       const st = styleOf(it);
