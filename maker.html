@@ -192,8 +192,10 @@ button.danger { color: var(--danger); }
     stone: { g: 'prop', label: '기념비', w: 4, d: 2, color: '#8f8f88' },
     fence: { g: 'prop', label: '울타리', w: 12, d: .5, color: '#5e6a62' }
   };
-  const ROOM_TYPES = [['class', '교실'], ['lab', '특별실'], ['office', '사무실'], ['wc', '화장실'], ['elevator', '엘리베이터'], ['stairs', '계단'], ['etc', '기타']];
-  const ROOM_TINT = { class: '#e6d6b8', lab: '#c9e0d8', office: '#d8dbe8', wc: '#cfe0ea', elevator: '#c5ccd0', stairs: '#ddd5c4', etc: '#e4e1da' };
+  const ROOM_TYPES = [['class', '교실'], ['science', '과학실'], ['music', '음악실'], ['art', '미술실'], ['tech', '기술실'], ['home', '가사실'], ['computer', '컴퓨터실'], ['library', '도서실'], ['cafeteria', '식당'], ['lab', '기타 특별실'], ['office', '사무실'], ['wc', '화장실'], ['elevator', '엘리베이터'], ['stairs', '계단'], ['etc', '기타']];
+  const ROOM_TINT = { class: '#e6d6b8', science: '#cfe3dc', music: '#e8d9e6', art: '#f0e0c4', tech: '#d9d4c8', home: '#f1e3d3', computer: '#d4dde8', library: '#e3dac8', cafeteria: '#efe2c6', lab: '#c9e0d8', office: '#d8dbe8', wc: '#cfe0ea', elevator: '#c5ccd0', stairs: '#ddd5c4', etc: '#e4e1da' };
+  const SPECIAL_TYPES = ['science', 'music', 'art', 'tech', 'home', 'computer', 'library', 'cafeteria'];
+  const BOARD_TYPES = ['class', 'science', 'music', 'art', 'tech', 'home', 'computer'];
   const DOOR_TYPES = [['center', '중앙현관'], ['door', '출입구'], ['exit', '비상구']];
   const DOOR_HALF = { center: 4.2, door: 1.5, exit: 1 };
   const DOOR_SIDES = [['front', '앞면'], ['back', '뒷면'], ['left', '왼쪽'], ['right', '오른쪽']];
@@ -307,6 +309,14 @@ button.danger { color: var(--danger); }
     if (/화장실/.test(name)) return 'wc';
     if (/엘리베이터|승강기/.test(name)) return 'elevator';
     if (/계단/.test(name)) return 'stairs';
+    if (/식당|급식/.test(name)) return 'cafeteria';
+    if (/과학|물리|화학|생물|지구|실험/.test(name)) return 'science';
+    if (/음악/.test(name)) return 'music';
+    if (/미술/.test(name)) return 'art';
+    if (/기술|목공/.test(name)) return 'tech';
+    if (/가사|가정|조리/.test(name)) return 'home';
+    if (/컴퓨터|정보|전산/.test(name)) return 'computer';
+    if (/도서|열람|자료실/.test(name)) return 'library';
     if (/반$|교실/.test(name)) return 'class';
     if (/행정|교무|교장|보건|상담|방송|준비/.test(name)) return 'office';
     if (/실$|강당|체육관/.test(name)) return 'lab';
@@ -618,6 +628,12 @@ button.danger { color: var(--danger); }
     ensureDoors(it);
     it.doors.forEach((d) => { d.t = clampDoor(it, d.side, d.t, d.type); });
     it.rooms = it.rooms || {};
+    if (!it.typesV2) {
+      Object.values(it.rooms).concat(it.pilotisStash ? [it.pilotisStash] : []).forEach((list) => list.forEach((r) => {
+        if (r.type === 'lab' && SPECIAL_TYPES.includes(typeFor(r.name))) r.type = typeFor(r.name);
+      }));
+      it.typesV2 = true;
+    }
     for (let f = 0; f < it.floors; f++) {
       if (it.pilotis && f === 0) { it.rooms[0] = it.rooms[0] || []; continue; }
       if (!it.rooms[f] || !it.rooms[f].length) it.rooms[f] = roomDefaults(it, f);
@@ -1431,8 +1447,110 @@ button.danger { color: var(--danger); }
     const [lx, lz] = fr.pt(W / 2, entry + run + landing / 2);
     flatLabel(parent, '계단', lx, H / 2 + .15, lz, Math.min(W * .6, landing * 2.4), '#59666b');
   }
+  function furnishSpecial(parent, room, x0, z0, rw, rd, door) {
+    const type = room.type, hasBoard = BOARD_TYPES.includes(type);
+    const side = hasBoard ? boardOf(room, door) : (door.side === 'back' ? 'front' : 'back');
+    const fr = roomFrame(x0, z0, rw, rd, side), { W, L } = fr, T = fr.turned, groups = {};
+    const addI = (key, u, v, du, h, dv, y, color) => {
+      (groups[key] = groups[key] || { du, h, dv, y, color, list: [] }).list.push(fr.pt(u, v));
+    };
+    const stools4 = (u, v, du, dv, color) => [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([a, b]) => addI('stool', u + a * du, v + b * dv, .38, .6, .38, .3, color || '#55707c'));
+    const grid = (cu, cv, v0, v1, fn) => {
+      const uw = W - 1.6, vd = v1 - v0;
+      if (uw < cu * .7 || vd < cv * .7) return;
+      const cols = clamp(Math.floor(uw / cu), 1, 8), rows = clamp(Math.floor(vd / cv), 1, 8);
+      for (let c = 0; c < cols; c++) for (let r = 0; r < rows; r++) fn(.8 + uw * (c + .5) / cols, v0 + vd * (r + .5) / rows);
+    };
+    if (hasBoard) {
+      let from = 0, to = W;
+      if (side === door.side) {
+        const doorU = T ? door.z - z0 : door.x - x0, before = doorU - .85, after = W - doorU - .85;
+        if (Math.max(before, after) >= 1.6) { if (before >= after) to = before; else from = doorU + .85; }
+      }
+      const span = to - from, mid = (from + to) / 2;
+      fr.put(parent, Math.min(span * .9, W * .55, 6), 1.2, .06, M('#2f5d4b'), mid, 1.75, .2);
+      fr.put(parent, Math.min(1.5, span * .8), .8, .6, M('#8a6a4c'), mid, .46, 1.05);
+    }
+    const back = L - .8;
+    if (type === 'science') {
+      grid(3.3, 2.9, 1.9, back, (u, v) => {
+        addI('benchBody', u, v, 2.1, .82, 1, .41, '#d8d4c8');
+        addI('benchTop', u, v, 2.3, .06, 1.15, .85, '#2c3a3f');
+        addI('tap', u + .95, v, .08, .38, .08, 1.06, '#9aa3a6');
+        stools4(u, v, .55, .85);
+      });
+      if (W > 4) fr.put(parent, Math.min(W - 1.6, 4), 1.9, .45, M('#b9c6c4'), W / 2, .95, L - .3);
+    } else if (type === 'music') {
+      if (W > 3) fr.put(parent, 1.5, 1.2, .6, M('#1d1f21'), W - 1.3, .6, 1.2);
+      for (let r = 0; r < 6; r++) {
+        const R = 2.4 + r * 1.15;
+        const n = Math.max(3, Math.floor(R * 2.1 / .8));
+        for (let k = 0; k < n; k++) {
+          const a = -1.05 + 2.1 * (k + .5) / n, u = W / 2 + R * Math.sin(a), v = .9 + R * Math.cos(a);
+          if (u < .6 || u > W - .6 || v < 2 || v > L - .6) continue;
+          addI('chair', u, v, .42, .46, .42, .25, '#7a4b3a');
+          addI('stand', u, v - .45, .05, 1.1, .05, .55, '#2f3437');
+        }
+      }
+    } else if (type === 'art') {
+      grid(2.7, 2.7, 1.9, back - .6, (u, v) => {
+        addI('table', u, v, 1.5, .74, 1.5, .37, '#c9b38f');
+        [[-1, 0], [1, 0], [0, -1], [0, 1]].forEach(([a, b]) => addI('chair', u + a * 1, v + b * 1, .4, .46, .4, .25, '#4f7d8a'));
+      });
+      for (let u = 1; u < W - .6; u += 1.6) addI('easel', u, L - .5, .7, 1.5, .08, .78, '#8a6a4c');
+    } else if (type === 'tech') {
+      grid(3.4, 2.9, 1.9, back - .8, (u, v) => {
+        addI('bench', u, v, 2.4, .86, 1.1, .43, '#8b7355');
+        addI('vise', u - .9, v, .25, .2, .25, .96, '#4b5356');
+        stools4(u, v, .6, .85, '#5e6a6e');
+      });
+      for (let u = 1.2; u < W - .8; u += 2.3) addI('machine', u, L - .7, 1.2, 1.3, .9, .65, '#5f6b70');
+    } else if (type === 'home') {
+      grid(3.4, 3, 1.9, back, (u, v) => {
+        addI('island', u, v, 2.4, .88, 1.2, .44, '#e7e3da');
+        addI('cooktop', u - .55, v, .9, .04, .6, .9, '#262a2c');
+        addI('sink', u + .7, v, .6, .04, .5, .9, '#9aa3a6');
+        stools4(u, v, .6, .9, '#b07a52');
+      });
+      if (W > 3) fr.put(parent, .8, 1.9, .7, M('#d7dcde'), W - .7, .95, L - .55);
+    } else if (type === 'computer') {
+      const uw = W - 1.6, cols = clamp(Math.floor(uw / 1.2), 1, 10);
+      for (let v = 2; v <= back - .5; v += 1.6) for (let c = 0; c < cols; c++) {
+        const u = .8 + uw * (c + .5) / cols;
+        addI('desk', u, v, 1.1, .72, .6, .36, '#c8c2b5');
+        addI('monitor', u, v - .15, .55, .38, .05, 1, '#1f2629');
+        addI('chair', u, v + .5, .42, .46, .42, .25, '#3d4f58');
+      }
+    } else if (type === 'library') {
+      fr.put(parent, Math.max(.8, W - 1.2), 1.8, .4, M('#8a6a4c'), W / 2, .9, .35);
+      if (L > 4) [.35, W - .35].forEach((u) => fr.put(parent, .4, 1.8, Math.max(.8, L - 3.4), M('#8a6a4c'), u, .9, 1 + (L - 3.4) / 2));
+      grid(2.8, 2.6, 1.6, L - 1.4, (u, v) => {
+        addI('table', u, v, 1.8, .74, 1, .37, '#b58e62');
+        [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([a, b]) => addI('chair', u + a * .5, v + b * .75, .4, .46, .4, .25, '#55707c'));
+      });
+    } else if (type === 'cafeteria') {
+      fr.put(parent, Math.max(1, Math.min(W - 1.6, 8)), .95, .7, M('#c9ced0'), W / 2, .48, .6);
+      const v0 = 1.9, v1 = L - 1, uw = W - 1.2, cols = clamp(Math.floor(uw / 2.4), 1, 12);
+      if (v1 - v0 >= 1.2) for (let c = 0; c < cols; c++) {
+        const u = .6 + uw * (c + .5) / cols;
+        const segs = Math.max(1, Math.ceil((v1 - v0) / 6.6)), segLen = (v1 - v0 - (segs - 1) * .8) / segs;
+        for (let k = 0; k < segs; k++) {
+          const a = v0 + k * (segLen + .8);
+          addI('table', u, a + segLen / 2, .9, .74, segLen, .37, '#d9c7a7');
+          for (let v = a + .35; v <= a + segLen - .3; v += .65) [-.65, .65].forEach((du) => addI('chair', u + du, v, .4, .46, .4, .25, '#c06a45'));
+        }
+      }
+    }
+    Object.values(groups).forEach((o) => {
+      const m = new THREE.InstancedMesh(new THREE.BoxGeometry(T ? o.dv : o.du, o.h, T ? o.du : o.dv), M(o.color), o.list.length), mx = new THREE.Matrix4();
+      o.list.forEach(([x, z], k) => m.setMatrixAt(k, mx.makeTranslation(x, o.y, z)));
+      m.instanceMatrix.needsUpdate = true;
+      parent.add(m);
+    });
+  }
   function furnish(parent, room, x0, z0, rw, rd, door, isTop) {
     const doorSide = door.side;
+    if (SPECIAL_TYPES.includes(room.type)) { furnishSpecial(parent, room, x0, z0, rw, rd, door); return; }
     if (room.type === 'stairs') { buildStairs(parent, x0, z0, rw, rd, doorSide, isTop); return; }
     if (room.type === 'elevator') {
       const cw = Math.max(.8, rw - .7), cd = Math.max(.8, rd - .7);
@@ -2375,8 +2493,8 @@ button.danger { color: var(--danger); }
   function boardEditor(it, f) {
     const wrap = el('div', { 'data-board-editor': '' });
     const room = roomsOf(it, f).find((r) => r.id === focus.room);
-    if (!room || room.type !== 'class' || !room.cell) {
-      wrap.append(el('p', { class: 'plan-note' }, '종류가 교실인 항목을 선택하면 칠판 위치와 책상 방향을 바꿀 수 있습니다.'));
+    if (!room || !BOARD_TYPES.includes(room.type) || !room.cell) {
+      wrap.append(el('p', { class: 'plan-note' }, '교실이나 과학실, 음악실 같은 특별실을 선택하면 칠판 위치와 책상 방향을 바꿀 수 있습니다.'));
       return wrap;
     }
     const current = boardOf(room, doorOf(it, f, room));
@@ -2386,7 +2504,7 @@ button.danger { color: var(--danger); }
       class: 'chip', type: 'button', 'aria-pressed': current === side,
       onclick: () => { if (current !== side) { room.board = side; after(); } }
     }, label))));
-    const others = roomsOf(it, f).filter((r) => r.type === 'class' && r.cell && r !== room);
+    const others = roomsOf(it, f).filter((r) => BOARD_TYPES.includes(r.type) && r.cell && r !== room);
     if (others.length) wrap.append(el('button', { class: 'wide', type: 'button', onclick: () => {
       others.forEach((r) => { r.board = current; });
       room.board = current;
@@ -2827,7 +2945,7 @@ button.danger { color: var(--danger); }
           const again = $('panel').querySelector(`[data-plan-room="${room.id}"]`);
           if (again) again.focus();
         }
-      }, room.type === 'elevator' ? 'EV' : room.name, room.type === 'class' ? el('span', { class: `plan-board ${boardOf(room, doorOf(it, f, room))}` }) : null, el('span', { class: 'plan-handle', hidden: !on }));
+      }, room.type === 'elevator' ? 'EV' : room.name, BOARD_TYPES.includes(room.type) ? el('span', { class: `plan-board ${boardOf(room, doorOf(it, f, room))}` }) : null, el('span', { class: 'plan-handle', hidden: !on }));
       b.title = room.name;
       b.dataset.planRoom = room.id;
       b.style.background = ROOM_TINT[room.type] || ROOM_TINT.etc;
@@ -3448,7 +3566,7 @@ button.danger { color: var(--danger); }
     buildings().forEach((b) => {
       if (b.name.toLowerCase().includes(q)) hits.push({ b, f: null, room: null, text: b.name, sub: '건물' });
       for (let f = 0; f < b.floors; f++) roomsOf(b, f).forEach((r) => {
-        const word = r.type === 'wc' ? '화장실' : r.type === 'elevator' ? '엘리베이터 승강기 ev' : r.type === 'stairs' ? '계단 stairs' : '';
+        const word = (r.type === 'elevator' ? '엘리베이터 승강기 ev' : r.type === 'stairs' ? '계단 stairs' : '') + ' ' + ((ROOM_TYPES.find(([v]) => v === r.type) || [])[1] || '');
         if (r.name.toLowerCase().includes(q) || word.includes(q)) hits.push({ b, f, room: r, text: r.name, sub: `${b.name} ${f + 1}층${r.cell ? '' : ' · 위치 미지정'}` });
       });
       (b.doors || []).forEach((d) => {
