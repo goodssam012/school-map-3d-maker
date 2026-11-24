@@ -618,7 +618,10 @@ button.danger { color: var(--danger); }
     ensureDoors(it);
     it.doors.forEach((d) => { d.t = clampDoor(it, d.side, d.t, d.type); });
     it.rooms = it.rooms || {};
-    for (let f = 0; f < it.floors; f++) if (!it.rooms[f] || !it.rooms[f].length) it.rooms[f] = roomDefaults(it, f);
+    for (let f = 0; f < it.floors; f++) {
+      if (it.pilotis && f === 0) { it.rooms[0] = it.rooms[0] || []; continue; }
+      if (!it.rooms[f] || !it.rooms[f].length) it.rooms[f] = roomDefaults(it, f);
+    }
     layoutRooms(it);
   }
   function makeItem(kind, x, z, patch) {
@@ -969,6 +972,7 @@ button.danger { color: var(--danger); }
       const pts = it.outline;
       for (let f = 0; f < it.floors; f++) {
         const fg = new THREE.Group();
+        if (it.pilotis && f === 0) { buildPilotisFloor(fg, it, st); g.add(fg); floors.push(fg); continue; }
         const walls = new THREE.Mesh(polyWallGeometry(pts, f * it.h, (f + 1) * it.h, f, it.floors, !!wallPhoto), wallM);
         walls.castShadow = walls.receiveShadow = true;
         const cap = new THREE.Mesh(polyCapGeometry(pts, (f + 1) * it.h), capM);
@@ -989,6 +993,7 @@ button.danger { color: var(--danger); }
       return;
     }
     for (let f = 0; f < it.floors; f++) {
+      if (it.pilotis && f === 0) { const fg = new THREE.Group(); buildPilotisFloor(fg, it, st); g.add(fg); floors.push(fg); continue; }
       const geo = new THREE.BoxGeometry(it.w, it.h, it.d);
       const uv = geo.attributes.uv;
       for (let i = 0; i < 24; i++) {
@@ -1043,6 +1048,41 @@ button.danger { color: var(--danger); }
     g.userData.top = top;
   }
 
+  function pilotisColumns(parent, it, mat, height) {
+    const poly = it.outline || [[-it.w / 2, -it.d / 2], [it.w / 2, -it.d / 2], [it.w / 2, it.d / 2], [-it.w / 2, it.d / 2]];
+    const pts = [], inside = (p) => pointInPoly(p, poly);
+    const add = (p) => { if (inside(p) && !pts.some((q) => Math.hypot(q[0] - p[0], q[1] - p[1]) < 3)) pts.push(p); };
+    poly.forEach((a, i) => {
+      const b = poly[(i + 1) % poly.length], dx = b[0] - a[0], dz = b[1] - a[1], len = Math.hypot(dx, dz) || 1;
+      let nx = dz / len, nz = -dx / len;
+      if (!inside([(a[0] + b[0]) / 2 + nx * .5, (a[1] + b[1]) / 2 + nz * .5])) { nx = -nx; nz = -nz; }
+      const n = Math.max(1, Math.round(len / 8)), ux = dx / len, uz = dz / len;
+      for (let k = 0; k <= n; k++) {
+        const along = k === 0 ? .45 : k === n ? -.45 : 0;
+        add([a[0] + dx * k / n + nx * .45 + ux * along, a[1] + dz * k / n + nz * .45 + uz * along]);
+      }
+    });
+    const sx = Math.max(1, Math.round(it.w / 8)), sz = Math.max(1, Math.round(it.d / 8));
+    for (let i = 1; i < sx; i++) for (let j = 1; j < sz; j++) add([-it.w / 2 + i * it.w / sx, -it.d / 2 + j * it.d / sz]);
+    if (!pts.length) return;
+    const m = new THREE.InstancedMesh(new THREE.BoxGeometry(.6, height, .6), mat, pts.length), mx = new THREE.Matrix4();
+    pts.forEach((p, k) => m.setMatrixAt(k, mx.makeTranslation(p[0], height / 2, p[1])));
+    m.instanceMatrix.needsUpdate = true;
+    m.castShadow = true;
+    parent.add(m);
+  }
+  function buildPilotisFloor(fg, it, st) {
+    const pts = it.outline, trimM = M(st.trim);
+    pilotisColumns(fg, it, M(st.wall), it.h - .4);
+    if (pts) {
+      fg.add(new THREE.Mesh(polyCapGeometry(pts, it.h - .42), new THREE.MeshLambertMaterial({ color: st.trim, side: THREE.DoubleSide })));
+      pts.forEach((a, i) => edgeBox(fg, a, pts[(i + 1) % pts.length], .42, .3, trimM, it.h - .21));
+      fg.add(new THREE.Mesh(polyCapGeometry(pts, .04), M('#d6d1c4')));
+    } else {
+      box(fg, it.w, .42, it.d, trimM, 0, it.h - .21, 0);
+      box(fg, it.w, .06, it.d, M('#d6d1c4'), 0, .03, 0, true);
+    }
+  }
   function polyWallGeometry(pts, y0, y1, floorIndex, floors, usePhoto) {
     const pos = [], nor = [], uv = [];
     let run = 0;
@@ -1503,7 +1543,7 @@ button.danger { color: var(--danger); }
     const g = new THREE.Group();
     g.position.y = f * it.h;
     const { w, d } = it, h = Math.min(it.h, 3.6), z0 = -d / 2, corridorZ = z0 + corridorRow(it, f) * gridOf(it).ch;
-    const wallM = M(st.wall === '#f1f0ea' ? '#dfddd4' : '#f0ece2');
+    const wallM = M(st.wall === '#f1f0ea' ? '#dfddd4' : '#f0ece2'), pil = !!it.pilotis && f === 0;
     if (it.outline) {
       g.add(new THREE.Mesh(polyCapGeometry(it.outline, .1), M('#bfc4bf')));
       const hg = gridOf(it);
@@ -1511,12 +1551,14 @@ button.danger { color: var(--danger); }
         const [c, r] = k.split(',').map(Number);
         box(g, hg.cw - .06, .02, hg.ch - .06, M('#dde2dc'), -w / 2 + (c + .5) * hg.cw, .12, z0 + (r + .5) * hg.ch, true);
       });
-      it.outline.forEach((a, i) => {
+      if (!pil) it.outline.forEach((a, i) => {
         const b = it.outline[(i + 1) % it.outline.length], len = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
         const facesCamera = (b[0] - a[0]) / len > .5;
         if (facesCamera) edgeBox(g, a, b, .95, .14, M(st.trim), .5);
         else edgeBox(g, a, b, h, .2, wallM, h / 2);
       });
+    } else if (pil) {
+      box(g, w, .1, d, M('#d6d1c4'), 0, .03, 0);
     } else {
       box(g, w, .14, d, M('#cfc9bc'), 0, .03, 0);
       box(g, w, .02, CORR, M('#bfc4bf'), 0, .11, corridorZ + CORR / 2, true);
@@ -1525,6 +1567,7 @@ button.danger { color: var(--danger); }
       box(g, .2, h, d, wallM, w / 2, h / 2, 0);
       box(g, w, .95, .12, M(st.trim), 0, .5, d / 2 - .05);
     }
+    if (pil) pilotisColumns(g, it, M(st.wall), it.h);
     rooms.forEach((room, i) => {
       if (!room.cell) return;
       const r = roomRect(it, room, f), door = doorOf(it, f, room);
@@ -1716,7 +1759,7 @@ button.danger { color: var(--danger); }
     focus = { id: null, floor: null, room: null };
     if (s === 'rooms') {
       const first = buildings()[0];
-      if (first) focus = { id: first.id, floor: 0, room: null };
+      if (first) focus = { id: first.id, floor: first.pilotis ? 1 : 0, room: null };
     }
     buildGround();
     buildInterior();
@@ -1727,7 +1770,7 @@ button.danger { color: var(--danger); }
     updateHint();
     stage.classList.toggle('no-pin-click', s === 'place');
     syncFinder();
-    if (focus.id) viewFloor(getItem(focus.id), 0);
+    if (focus.id) viewFloor(getItem(focus.id), focus.floor);
     else if (s === 'place') viewTop();
     else if (prev !== s) viewHome();
   }
@@ -1924,6 +1967,7 @@ button.danger { color: var(--danger); }
     p.append(el('button', { class: 'primary next', type: 'button', onclick: () => setStep('rooms') }, '다음: 교실 정보'));
   }
   function changeItem(it, patch) {
+    if (it.pilotis && 'floors' in patch && patch.floors < 2) { patch = Object.assign({}, patch, { floors: 2 }); toast('필로티 건물은 2층 이상이어야 합니다.'); }
     if (it.outline && ('w' in patch || 'd' in patch)) {
       const sx = ('w' in patch ? patch.w : it.w) / it.w, sz = ('d' in patch ? patch.d : it.d) / it.d;
       patch = Object.assign({}, patch, { outline: it.outline.map((p) => [p[0] * sx, p[1] * sz]) });
@@ -1948,6 +1992,40 @@ button.danger { color: var(--danger); }
       remapRooms(it, gridFor('w' in patch ? old.w : it.w, 'd' in patch ? old.d : it.d, !!it.outline));
     }
     ensureRooms(it);
+    rebuildItem(it);
+    buildInterior();
+    applyFocus();
+    updateSelection();
+    commit();
+    renderPanel();
+  }
+  const CORE_ROOMS = ['stairs', 'elevator'];
+  function setPilotis(it, on) {
+    if (!!it.pilotis === on) return;
+    if (on) {
+      const ground = roomsOf(it, 0);
+      it.pilotisStash = ground.filter((r) => !CORE_ROOMS.includes(r.type));
+      it.rooms[0] = ground.filter((r) => CORE_ROOMS.includes(r.type));
+      it.pilotis = true;
+      const grow = it.floors < 2;
+      if (grow) {
+        it.floors = 2;
+        it.rooms[1] = it.pilotisStash;
+        it.pilotisStash = [];
+      }
+      ensureRooms(it);
+      toast(`1층을 필로티로 바꿨습니다.${grow ? ' 2층 건물이 되었고 1층 교실은 2층으로 옮겼습니다.' : ''}${it.pilotisStash.length ? ` 1층 교실 ${it.pilotisStash.length}개는 숨겨 두었고, 필로티를 끄면 돌아옵니다.` : ''}`);
+    } else {
+      const cores = roomsOf(it, 0), back = it.pilotisStash || [];
+      back.forEach((r) => { if (r.cell && cores.some((o) => o.cell && cellsOverlap(o.cell, r.cell))) r.cell = undefined; });
+      it.rooms[0] = back.concat(cores);
+      delete it.pilotisStash;
+      it.pilotis = false;
+      ensureRooms(it);
+      roomsOf(it, 0).forEach((r) => { if (r.cell === undefined) r.cell = autoCell(it, 0, r.id); });
+      toast('필로티를 끄고 1층을 일반 층으로 되돌렸습니다.');
+    }
+    if (focus.floor === 0 && on) focus.room = null;
     rebuildItem(it);
     buildInterior();
     applyFocus();
@@ -2014,6 +2092,9 @@ button.danger { color: var(--danger); }
       box_.append(el('div', { class: 'cols two' },
         numField('층수', it.floors, 1, 12, 1, (v) => changeItem(it, { floors: v })),
         numField('층 높이(m)', it.h, 3.2, 14, .2, (v) => changeItem(it, { h: v }))));
+      box_.append(el('label', { class: 'check' },
+        el('input', { type: 'checkbox', checked: !!it.pilotis, onchange: (e) => setPilotis(it, e.target.checked) }),
+        ' 1층 필로티 (1층은 기둥만, 2층부터 교실)'));
       box_.append(el('div', { class: 'cols' },
         field('벽', el('input', { type: 'color', value: st.wall, onchange: (e) => setStyle({ wall: e.target.value }) })),
         field('포인트', el('input', { type: 'color', value: st.trim, onchange: (e) => setStyle({ trim: e.target.value }) })),
@@ -2375,7 +2456,7 @@ button.danger { color: var(--danger); }
     const base = type === 'elevator' ? '엘리베이터' : type === 'stairs' ? '계단' : '화장실';
     let floors = allFloors ? Array.from({ length: it.floors }, (_, n) => n) : [floor];
     if (allFloors && type === 'wc') {
-      floors = floors.filter((n) => !roomsOf(it, n).some((r) => r.type === 'wc'));
+      floors = floors.filter((n) => !(it.pilotis && n === 0) && !roomsOf(it, n).some((r) => r.type === 'wc'));
       if (!floors.length) { toast('모든 층에 이미 화장실이 있습니다.'); return; }
     }
     const f = floors.includes(floor) ? floor : floors[0];
@@ -2869,14 +2950,23 @@ button.danger { color: var(--danger); }
     }
     p.append(el('p', {}, '격자에서 교실 자리를 정하고 이름을 입력하세요.'));
     p.append(el('div', { class: 'chips', role: 'group', 'aria-label': '건물 선택' }, list.map((b) => el('button', {
-      class: 'chip', type: 'button', 'aria-pressed': focus.id === b.id, onclick: () => selectFloor(b.id, 0)
+      class: 'chip', type: 'button', 'aria-pressed': focus.id === b.id, onclick: () => selectFloor(b.id, b.pilotis ? 1 : 0)
     }, b.name))));
     const it = getItem(focus.id);
     if (!isBuilding(it)) return;
     const f = focus.floor === null ? 0 : focus.floor;
     const floorBtns = [];
-    for (let i = it.floors - 1; i >= 0; i--) floorBtns.push(el('button', { class: 'chip', type: 'button', 'aria-pressed': f === i, onclick: () => selectFloor(it.id, i) }, `${i + 1}층`));
+    for (let i = it.floors - 1; i >= 0; i--) floorBtns.push(el('button', { class: 'chip', type: 'button', 'aria-pressed': f === i, onclick: () => selectFloor(it.id, i) }, it.pilotis && i === 0 ? '1층 필로티' : `${i + 1}층`));
     p.append(el('h3', {}, `${it.name} 층 선택`), el('div', { class: 'chips', role: 'group', 'aria-label': '층 선택' }, floorBtns));
+    if (it.pilotis && f === 0) {
+      const cores = roomsOf(it, 0);
+      p.append(el('h3', {}, '1층 필로티'),
+        el('p', {}, '1층은 기둥만 있는 열린 공간입니다. 교실은 2층부터 입력하세요.'),
+        el('p', { class: 'plan-note' }, cores.length ? `2층 이상에 넣은 계단과 엘리베이터는 1층에도 함께 표시됩니다: ${cores.map((r) => r.name).join(', ')}` : '2층 이상에서 계단이나 엘리베이터를 넣으면 1층에도 함께 표시됩니다.'),
+        el('p', { class: 'plan-note' }, '필로티는 2단계 건물 배치에서 건물을 선택한 뒤 끄고 켤 수 있습니다.'),
+        el('button', { class: 'primary next', type: 'button', onclick: () => selectFloor(it.id, 1) }, '2층 교실 입력하기'));
+      return;
+    }
     if (!it.outline) {
       const kinds = [['front', '아래 복도'], ['back', '위 복도'], ['center', '가운데 복도']];
       const canCenter = gridOf(it).rows >= 2, current_ = corridorOf(it, f);
@@ -2997,7 +3087,7 @@ button.danger { color: var(--danger); }
     const rows = [];
     for (let f = it.floors - 1; f >= 0; f--) {
       rows.push(el('button', { class: 'row', type: 'button', 'aria-pressed': focus.floor === f, onclick: () => selectFloor(it.id, focus.floor === f ? null : f) },
-        el('strong', {}, `${f + 1}층`), el('span', {}, roomsOf(it, f).map((r) => r.name).join(', '))));
+        el('strong', {}, `${f + 1}층`), el('span', {}, (it.pilotis && f === 0 ? ['필로티'] : []).concat(roomsOf(it, f).map((r) => r.name)).join(', '))));
     }
     p.append(el('div', { class: 'list' }, rows));
     if (focus.floor !== null) {
