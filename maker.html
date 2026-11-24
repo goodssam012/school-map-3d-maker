@@ -29,6 +29,20 @@ button:hover:not(:disabled) { border-color: var(--accent); }
 button:disabled { opacity: .45; cursor: default; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
 button.danger { color: var(--danger); }
+.modal-back { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 16px; background: rgb(20 26 28 / .45); }
+.modal { width: min(640px, 100%); max-height: calc(100dvh - 32px); display: flex; flex-direction: column; background: var(--surface); border-radius: 12px; box-shadow: 0 18px 50px rgb(0 0 0 / .25); }
+.modal header { padding: 18px 20px 8px; }
+.modal h2 { margin: 0 0 6px; font-size: 20px; }
+.modal p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.55; }
+.modal .merge-list { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 20px; }
+.merge-row { display: grid; grid-template-columns: 24px minmax(0, 1fr) 170px; gap: 10px; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--line); }
+.merge-row strong { display: block; font-size: 15px; }
+.merge-row small { display: block; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
+.merge-row small.newer { color: var(--accent); font-weight: 700; }
+.merge-row small.older { color: var(--danger); }
+.merge-row select { width: 100%; height: 34px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+.modal footer { display: flex; gap: 8px; justify-content: flex-end; padding: 12px 20px 18px; border-top: 1px solid var(--line); }
+@media (max-width: 560px) { .merge-row { grid-template-columns: 24px minmax(0, 1fr); } .merge-row select { grid-column: 2; } }
 .layout { flex: 1; min-height: 0; display: grid; grid-template-columns: 370px minmax(0, 1fr); }
 .layout.half { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 .panel { overflow-y: auto; padding: 18px 16px 28px; background: var(--surface); border-right: 1px solid var(--line); }
@@ -255,6 +269,8 @@ button.danger { color: var(--danger); }
       <div class="tools" id="tools">
         <button id="btnUndo" type="button">되돌리기</button>
         <button id="btnOpen" type="button">열기</button>
+        <button id="btnMerge" type="button" title="다른 사람이 저장한 제작 파일에서 건물을 골라 지금 작업에 합칩니다">합치기</button>
+        <input id="fileMerge" type="file" accept=".json" hidden>
         <button id="btnSave" type="button">저장</button>
         <input id="fileOpen" type="file" accept=".json,.js" hidden>
         <input id="fileGround" type="file" accept="image/*" hidden>
@@ -780,7 +796,16 @@ button.danger { color: var(--danger); }
     if (PUB) return;
     try { localStorage.setItem(KEY, snapshot()); } catch (e) { toast('자동 저장에 실패했습니다. 저장 버튼으로 파일을 보관해 주세요.'); }
   }
+  function stampChanges(prevSnap) {
+    let prev;
+    try { prev = JSON.parse(prevSnap); } catch (e) { return; }
+    const plain = (i) => JSON.stringify(Object.assign({}, i, { mtime: 0 }));
+    const old = new Map(((prev && prev.items) || []).map((i) => [i.id, plain(i)]));
+    const now = Date.now();
+    project.items.forEach((i) => { if (old.get(i.id) !== plain(i)) i.mtime = now; });
+  }
   function commit() {
+    if (history.length) stampChanges(history[history.length - 1]);
     const s = snapshot();
     if (s !== history[history.length - 1]) {
       history.push(s);
@@ -3842,6 +3867,137 @@ button.danger { color: var(--danger); }
   $('btnUndo').onclick = undo;
   $('btnSave').onclick = () => { download(`${safeName()}_제작파일.json`, JSON.stringify(fullProject()), 'application/json'); toast('제작 파일을 저장했습니다.'); };
   $('btnOpen').onclick = () => $('fileOpen').click();
+  $('btnMerge').onclick = () => $('fileMerge').click();
+  const kindLabel = (it) => (CAT[it.kind] ? CAT[it.kind].label : it.kind);
+  const whenText = (t) => (t ? new Date(t).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '기록 없음');
+  function itemSummary(it) {
+    if (!isBuilding(it)) return kindLabel(it);
+    let rooms = 0;
+    for (let f = 0; f < it.floors; f++) rooms += ((it.rooms && it.rooms[f]) || []).length;
+    return `${kindLabel(it)} · ${it.floors}층 · 교실 ${rooms}개`;
+  }
+  function freeSpotFor(it, cx, cz, ignoreId) {
+    const hidden = ignoreId ? project.items.find((o) => o.id === ignoreId) : null;
+    if (hidden) project.items = project.items.filter((o) => o !== hidden);
+    let spot = null;
+    for (let radius = 0; radius <= 220 && !spot; radius += 4) {
+      for (let a = 0; a < (radius ? 24 : 1) && !spot; a++) {
+        const [x, z] = clampPos(it, cx + Math.cos(a / 24 * Math.PI * 2) * radius, cz + Math.sin(a / 24 * Math.PI * 2) * radius);
+        if (!overlaps(it, x, z)) spot = [x, z];
+      }
+    }
+    if (hidden) project.items.push(hidden);
+    return spot;
+  }
+  function openMergeDialog(incoming, fileName) {
+    const plain = (i) => JSON.stringify(Object.assign({}, i, { mtime: 0, x: 0, z: 0 }));
+    const rows = incoming.items.map((src) => {
+      const byId = project.items.find((o) => o.id === src.id);
+      const match = byId || project.items.find((o) => o.kind === src.kind && o.name === src.name);
+      const same = match && plain(match) === plain(Object.assign({}, src, { id: match.id }));
+      const building = isBuilding(src);
+      let action = 'skip';
+      if (!match) action = building || CAT[src.kind].g !== 'prop' ? 'add' : 'skip';
+      else if (!same && (src.mtime || 0) > (match.mtime || 0)) action = 'replace';
+      return { src, match, same, action };
+    }).sort((a, b) => Number(isBuilding(b.src)) - Number(isBuilding(a.src)));
+    const sameCount = rows.filter((r) => r.same).length, shown = rows.filter((r) => !r.same);
+    if (!shown.length) { toast('가져온 파일이 지금 작업과 똑같습니다. 합칠 내용이 없습니다.'); return; }
+    const back = el('div', { class: 'modal-back' });
+    const close = () => { back.remove(); document.removeEventListener('keydown', onKey); };
+    const onKey = (e) => { if (e.key === 'Escape') close(); };
+    document.addEventListener('keydown', onKey);
+    const list = el('div', { class: 'merge-list' }, shown.map((row) => {
+      const { src, match, same } = row;
+      const opts = match ? [['replace', '가져온 것으로 바꾸기'], ['add', '따로 추가'], ['skip', '건너뛰기']] : [['add', '추가'], ['skip', '건너뛰기']];
+      let note = '지금 작업에 없는 항목입니다.', cls = '';
+      if (match && same) note = '지금 작업과 똑같습니다.';
+      else if (match) {
+        const newer = (src.mtime || 0) > (match.mtime || 0);
+        note = `같은 ${match.id === src.id ? '건물' : '이름'}이 있습니다. ${newer ? '가져온 쪽이 더 최근에 고쳐졌습니다' : '지금 쪽이 더 최근에 고쳐졌습니다'} (가져온 쪽 ${whenText(src.mtime)}, 지금 쪽 ${whenText(match.mtime)})`;
+        cls = newer ? 'newer' : 'older';
+      }
+      const sel = selectEl(row.action, opts, (v) => { row.action = v; check.checked = v !== 'skip'; }, `${src.name} 처리 방법`);
+      const check = el('input', { type: 'checkbox', checked: row.action !== 'skip', 'aria-label': `${src.name} 가져오기`, onchange: (e) => {
+        row.action = e.target.checked ? (match ? (sel.value === 'skip' ? 'replace' : sel.value) : 'add') : 'skip';
+        sel.value = row.action;
+      } });
+      return el('label', { class: 'merge-row' }, check,
+        el('span', {}, el('strong', {}, src.name || kindLabel(src)), el('small', {}, itemSummary(src)), el('small', { class: cls }, note)),
+        sel);
+    }));
+    const apply = el('button', { class: 'primary', type: 'button', onclick: () => { close(); applyMerge(incoming, rows); } }, '선택한 항목 합치기');
+    back.append(el('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': '가져와 합치기' },
+      el('header', {},
+        el('h2', {}, '가져와 합치기'),
+        el('p', {}, `'${fileName}' (${incoming.name || '이름 없음'})에서 지금 작업으로 가져올 항목을 고르세요. 학교 이름, 스타일, 바닥 배치도는 그대로 둡니다.`),
+        el('p', {}, `같은 건물이 있으면 더 최근에 고친 쪽이 미리 선택됩니다. 합친 뒤에도 되돌리기로 취소할 수 있습니다.${sameCount ? ` 지금 작업과 똑같은 항목 ${sameCount}개는 목록에서 뺐습니다.` : ''}`)),
+      list,
+      el('footer', {}, el('button', { type: 'button', onclick: close }, '취소'), apply)));
+    back.addEventListener('pointerdown', (e) => { if (e.target === back) close(); });
+    document.body.append(back);
+    apply.focus();
+  }
+  function applyMerge(incoming, rows) {
+    const chosen = rows.filter((r) => r.action !== 'skip');
+    if (!chosen.length) { toast('선택한 항목이 없습니다.'); return; }
+    project.assets = project.assets || {};
+    const copyAsset = (id) => {
+      const data = incoming.assets && incoming.assets[id];
+      if (!id || !data) return null;
+      if (project.assets[id] && project.assets[id] !== data) { const nid = 'a' + uid(); project.assets[nid] = data; return nid; }
+      project.assets[id] = data;
+      return id;
+    };
+    let replaced = 0, added = 0, moved = 0;
+    chosen.forEach((row) => {
+      const it = JSON.parse(JSON.stringify(row.src));
+      if (it.photo) it.photo = copyAsset(it.photo);
+      if (row.action === 'replace' && row.match) {
+        it.id = row.match.id;
+        const spot = freeSpotFor(it, it.x, it.z, row.match.id);
+        if (!spot) return;
+        if (spot[0] !== it.x || spot[1] !== it.z) moved++;
+        [it.x, it.z] = spot;
+        project.items = project.items.map((o) => (o === row.match ? it : o));
+        replaced++;
+      } else {
+        if (project.items.some((o) => o.id === it.id)) {
+          it.id = uid();
+          if (it.rooms) Object.values(it.rooms).forEach((list) => list.forEach((r) => { r.id = uid(); }));
+        }
+        if (project.items.some((o) => o.name === it.name)) it.name = `${it.name} (가져옴)`.slice(0, 20);
+        const spot = freeSpotFor(it, it.x, it.z);
+        if (!spot) return;
+        if (spot[0] !== it.x || spot[1] !== it.z) moved++;
+        [it.x, it.z] = spot;
+        project.items.push(it);
+        added++;
+      }
+      it.mtime = Date.now();
+    });
+    project.items.forEach(ensureRooms);
+    focus = { id: null, floor: null, room: null };
+    rebuildAll();
+    commit();
+    assetsChanged();
+    renderPanel();
+    const skipped = chosen.length - replaced - added;
+    toast(`합쳤습니다: 바꿈 ${replaced}개, 추가 ${added}개${moved ? `, 겹쳐서 옮김 ${moved}개` : ''}${skipped ? `, 자리가 없어 못 넣음 ${skipped}개` : ''}.`);
+  }
+  $('fileMerge').onchange = async (e) => {
+    const f = e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    try {
+      const text = await f.text();
+      const raw = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1));
+      if (!validProject(raw)) throw new Error('invalid');
+      if (!raw.items.length) { toast('가져올 항목이 없는 파일입니다.'); return; }
+      cancelPlace();
+      openMergeDialog(raw, f.name);
+    } catch (err) { toast('제작 파일(.json)이 아닙니다. 저장 버튼으로 만든 파일을 골라 주세요.'); }
+  };
   function fromLegacy(d) {
     const next = newProject('classic', 'empty');
     next.name = String(d.name || '우리학교').replace(/\s*3D 안내도$/, '').slice(0, 24) || '우리학교';
