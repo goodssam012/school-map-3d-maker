@@ -102,6 +102,12 @@ button.danger { color: var(--danger); }
 .plan-hallcell { position: absolute; pointer-events: none; background: #c9d3cf; box-shadow: inset 0 0 0 1px #aab6b1; }
 .plan.painting, .plan.painting .plan-room { cursor: crosshair; }
 .plan-preview.hall { background: rgb(120 140 132 / .45); border: 2px solid #5d6f68; }
+.plan-door { position: absolute; z-index: 2; pointer-events: none; background: #7c3f1d; transform: translate(-50%, -50%); border-radius: 1px; }
+.plan-door.h { width: 14px; height: 5px; }
+.plan-door.v { width: 5px; height: 14px; }
+.plan-room.plan-extra { cursor: move; }
+.plan.merging, .plan.merging .plan-room { cursor: copy; }
+.plan-preview.merge { background: rgb(47 111 179 / .3); border: 2px solid #2f6fb3; }
 .plan-preview.insert { background: rgb(47 111 179 / .3); border: 2px dashed #2f6fb3; }
 .plan-preview.bad { background: rgb(217 45 32 / .35); border-color: #d92d20; }
 .plan-hall { padding: 3px; border: 2px solid #5d686d; border-top: 0; background: #dfe3df; color: var(--muted); font-size: 12px; text-align: center; }
@@ -196,8 +202,10 @@ button.danger { color: var(--danger); }
   const ROOM_TINT = { class: '#e6d6b8', science: '#cfe3dc', music: '#e8d9e6', art: '#f0e0c4', tech: '#d9d4c8', home: '#f1e3d3', computer: '#d4dde8', library: '#e3dac8', cafeteria: '#efe2c6', lab: '#c9e0d8', office: '#d8dbe8', wc: '#cfe0ea', elevator: '#c5ccd0', stairs: '#ddd5c4', etc: '#e4e1da' };
   const SPECIAL_TYPES = ['science', 'music', 'art', 'tech', 'home', 'computer', 'library', 'cafeteria'];
   const BOARD_TYPES = ['class', 'science', 'music', 'art', 'tech', 'home', 'computer'];
-  const DOOR_TYPES = [['center', '중앙현관'], ['door', '출입구'], ['exit', '비상구']];
-  const DOOR_HALF = { center: 4.2, door: 1.5, exit: 1 };
+  const DOOR_TYPES = [['center', '중앙현관'], ['glass', '유리문 현관'], ['door', '출입구'], ['exit', '비상구']];
+  const DOOR_HALF = { center: 4.2, glass: 2.4, door: 1.5, exit: 1 };
+  const ROOM_DOORS = [['auto', '종류에 맞게'], ['wood', '나무문'], ['glass', '유리문'], ['double', '양쪽 유리문'], ['sliding', '미닫이문'], ['open', '문 없음']];
+  const ROOM_DOOR_SIDES = [['auto', '자동 (복도 쪽)'], ['front', '아래 벽'], ['back', '위 벽'], ['left', '왼쪽 벽'], ['right', '오른쪽 벽']];
   const DOOR_SIDES = [['front', '앞면'], ['back', '뒷면'], ['left', '왼쪽'], ['right', '오른쪽']];
   const ROOF_TYPES = [['flat', '평지붕'], ['gable', '박공지붕'], ['arch', '아치지붕']];
   const WIN_TYPES = [['grid', '격자창'], ['band', '띠창'], ['arch', '아치창'], ['curtain', '커튼월']];
@@ -444,6 +452,16 @@ button.danger { color: var(--danger); }
     return false;
   }
   const cellsOverlap = (a, b) => a.c < b.c + b.cs && b.c < a.c + a.cs && a.r < b.r + b.rs && b.r < a.r + a.rs;
+  const roomRects = (room) => (room && room.cell ? [room.cell].concat((room.more || []).map((m) => ({ c: room.cell.c + m.dc, r: room.cell.r + m.dr, cs: m.cs, rs: m.rs }))) : []);
+  const roomHits = (room, cell) => roomRects(room).some((a) => cellsOverlap(a, cell));
+  const roomsClash = (a, b) => roomRects(a).some((x) => roomHits(b, x));
+  function roomBox(room) {
+    const rs = roomRects(room);
+    const c0 = Math.min(...rs.map((a) => a.c)), r0 = Math.min(...rs.map((a) => a.r));
+    return { c: c0, r: r0, cs: Math.max(...rs.map((a) => a.c + a.cs)) - c0, rs: Math.max(...rs.map((a) => a.r + a.rs)) - r0 };
+  }
+  const shiftedCell = (room, box, next) => ({ c: room.cell.c + next.c - box.c, r: room.cell.r + next.r - box.r, cs: room.cell.cs, rs: room.cell.rs });
+  const rectsTouch = (a, b) => ((a.c + a.cs === b.c || b.c + b.cs === a.c) && a.r < b.r + b.rs && b.r < a.r + a.rs) || ((a.r + a.rs === b.r || b.r + b.rs === a.r) && a.c < b.c + b.cs && b.c < a.c + a.cs);
   const insideGrid = (cell, g) => cell.c >= 0 && cell.r >= 0 && cell.cs >= 1 && cell.rs >= 1 && cell.c + cell.cs <= g.cols && cell.r + cell.rs <= g.rows;
   function corridorOf(it, f) {
     return (it.corridor && (it.corridor[f] || it.corridor[0])) || 'front';
@@ -470,7 +488,7 @@ button.danger { color: var(--danger); }
     const others = ((it.rooms && it.rooms[f]) || []).filter((o) => o.cell && !list.includes(o));
     const setRow = (rooms, r, rs) => {
       const free = [];
-      for (let c = 0; c < g.cols; c++) if (!others.some((o) => cellsOverlap(o.cell, { c, r, cs: 1, rs }))) free.push(c);
+      for (let c = 0; c < g.cols; c++) if (!others.some((o) => roomHits(o, { c, r, cs: 1, rs }))) free.push(c);
       rooms.forEach((room, i) => {
         const part = free.slice(Math.floor(i * free.length / rooms.length), Math.floor((i + 1) * free.length / rooms.length));
         let best = [], run = [];
@@ -479,6 +497,7 @@ button.danger { color: var(--danger); }
           if (run.length > best.length) best = run;
         });
         room.cell = best.length ? { c: best[0], r, cs: best.length, rs } : null;
+        room.more = null;
       });
     };
     if (cr > 0 && cr < g.rows) {
@@ -493,6 +512,7 @@ button.danger { color: var(--danger); }
     for (let i = 0; i < it.floors; i++) if (!it.corridor[i]) it.corridor[i] = corridorOf(it, i);
     it.corridor[f] = kind;
     if (prev === kind) return;
+    (it.rooms[f] || []).forEach((r) => { r.more = null; });
     const rooms = it.rooms[f] || [], placed = rooms.filter((r) => r.cell);
     const isFixed = (r) => ['elevator', 'wc', 'stairs'].includes(r.type);
     const fixed = placed.filter(isFixed), normal = placed.filter((r) => !isFixed(r));
@@ -525,7 +545,12 @@ button.danger { color: var(--danger); }
   }
   function fitsCell(it, f, cell, exceptId) {
     const g = gridOf(it);
-    return insideGrid(cell, g) && cellInMask(cell, g) && !crossesCorridor(it, f, cell) && !cellHitsHall(it, f, cell) && !((it.rooms && it.rooms[f]) || []).some((o) => o.id !== exceptId && o.cell && cellsOverlap(o.cell, cell));
+    return insideGrid(cell, g) && cellInMask(cell, g) && !crossesCorridor(it, f, cell) && !cellHitsHall(it, f, cell) && !((it.rooms && it.rooms[f]) || []).some((o) => o.id !== exceptId && o.cell && roomHits(o, cell));
+  }
+  function fitsRoomAt(it, f, room, cell) {
+    const probe = { cell, more: room.more }, rects = roomRects(probe);
+    if (rects.some((a, i) => rects.some((b, j) => j > i && cellsOverlap(a, b)))) return false;
+    return rects.every((a) => fitsCell(it, f, a, room.id));
   }
   function autoCell(it, f, exceptId) {
     const g = gridOf(it);
@@ -548,6 +573,7 @@ button.danger { color: var(--danger); }
     for (let f = 0; f < it.floors; f++) {
       const list = it.rooms[f];
       list.forEach((room) => { if (room.cell && (!insideGrid(room.cell, g) || !cellInMask(room.cell, g) || crossesCorridor(it, f, room.cell) || cellHitsHall(it, f, room.cell))) room.cell = null; });
+      list.forEach((room) => { if (room.more && (!room.cell || roomRects(room).slice(1).some((a) => !insideGrid(a, g) || !cellInMask(a, g) || crossesCorridor(it, f, a) || cellHitsHall(it, f, a)))) room.more = null; });
       const pending = list.filter((room) => room.cell === undefined);
       if (!it.outline && pending.length && pending.length === list.length) {
         distributeRooms(it, f, list);
@@ -557,6 +583,7 @@ button.danger { color: var(--danger); }
     }
   }
   function remapRooms(it, oldGrid) {
+    Object.values(it.rooms || {}).forEach((list) => list.forEach((r) => { if (r.more && !(gridFor(it.w, it.d, !!it.outline).cols === oldGrid.cols && gridFor(it.w, it.d, !!it.outline).rows === oldGrid.rows)) r.more = null; }));
     const g = gridFor(it.w, it.d, !!it.outline);
     if (g.cols === oldGrid.cols && g.rows === oldGrid.rows) return;
     it.hall = null;
@@ -586,7 +613,7 @@ button.danger { color: var(--danger); }
   }
   function ensureDoors(it) {
     if (!Array.isArray(it.doors) || !it.doors.length) {
-      it.doors = [{ id: uid(), name: it.kind === 'main' ? '중앙현관' : `${it.name} 현관`, type: 'center', side: it.outline ? bestEdge(it) : 'front', t: .5 }];
+      it.doors = [{ id: uid(), name: it.kind === 'main' ? '중앙현관' : `${it.name} 현관`, type: it.kind === 'cafeteria' ? 'glass' : 'center', side: it.outline ? bestEdge(it) : 'front', t: .5 }];
       return;
     }
     it.doors.forEach((d) => {
@@ -1155,6 +1182,13 @@ button.danger { color: var(--danger); }
       box(e, .08, 2.7, .24, capM, 0, 1.35, .08);
       box(e, 8.4, .12, 4, M('#b9b3a6'), 0, .06, 1.9, true);
       plate(5.4, .36, 3.5, 3.615, st.trim);
+    } else if (door.type === 'glass') {
+      box(e, 5.2, .25, 2.2, capM, 0, 3.1, 1.1);
+      box(e, 4.6, 2.8, .08, M('#3b4a50'), 0, 1.4, .06);
+      [-1.12, -.38, .38, 1.12].forEach((x) => box(e, .72, 2.55, .09, GLASS_M, x, 1.32, .1, true));
+      [-.1, .1].forEach((x) => box(e, .05, .5, .05, M('#c8d0d3'), x, 1.2, .16, true));
+      box(e, 5.4, .1, 2.4, M('#b9b3a6'), 0, .05, 1.2, true);
+      plate(4, .36, 3.1, 2.215, st.trim);
     } else if (door.type === 'door') {
       box(e, 2.8, .18, 1.5, capM, 0, 2.7, .75);
       box(e, 2, 2.45, .18, M('#44555c'), 0, 1.23, .07);
@@ -1447,8 +1481,8 @@ button.danger { color: var(--danger); }
     const [lx, lz] = fr.pt(W / 2, entry + run + landing / 2);
     flatLabel(parent, '계단', lx, H / 2 + .15, lz, Math.min(W * .6, landing * 2.4), '#59666b');
   }
-  function furnishSpecial(parent, room, x0, z0, rw, rd, door) {
-    const type = room.type, hasBoard = BOARD_TYPES.includes(type);
+  function furnishSpecial(parent, room, x0, z0, rw, rd, door, opts) {
+    const type = room.type, hasBoard = BOARD_TYPES.includes(type), noBoard = !!(opts && opts.noBoard);
     const side = hasBoard ? boardOf(room, door) : (door.side === 'back' ? 'front' : 'back');
     const fr = roomFrame(x0, z0, rw, rd, side), { W, L } = fr, T = fr.turned, groups = {};
     const addI = (key, u, v, du, h, dv, y, color) => {
@@ -1461,7 +1495,7 @@ button.danger { color: var(--danger); }
       const cols = clamp(Math.floor(uw / cu), 1, 8), rows = clamp(Math.floor(vd / cv), 1, 8);
       for (let c = 0; c < cols; c++) for (let r = 0; r < rows; r++) fn(.8 + uw * (c + .5) / cols, v0 + vd * (r + .5) / rows);
     };
-    if (hasBoard) {
+    if (hasBoard && !noBoard) {
       let from = 0, to = W;
       if (side === door.side) {
         const doorU = T ? door.z - z0 : door.x - x0, before = doorU - .85, after = W - doorU - .85;
@@ -1548,9 +1582,9 @@ button.danger { color: var(--danger); }
       parent.add(m);
     });
   }
-  function furnish(parent, room, x0, z0, rw, rd, door, isTop) {
-    const doorSide = door.side;
-    if (SPECIAL_TYPES.includes(room.type)) { furnishSpecial(parent, room, x0, z0, rw, rd, door); return; }
+  function furnish(parent, room, x0, z0, rw, rd, door, isTop, opts) {
+    const doorSide = door.side, noBoard = !!(opts && opts.noBoard);
+    if (SPECIAL_TYPES.includes(room.type)) { furnishSpecial(parent, room, x0, z0, rw, rd, door, opts); return; }
     if (room.type === 'stairs') { buildStairs(parent, x0, z0, rw, rd, doorSide, isTop); return; }
     if (room.type === 'elevator') {
       const cw = Math.max(.8, rw - .7), cd = Math.max(.8, rd - .7);
@@ -1580,8 +1614,10 @@ button.danger { color: var(--danger); }
         if (Math.max(before, after) >= 1.6) { if (before >= after) to = before; else from = doorU + .85; }
       }
       const span = to - from, mid = (from + to) / 2;
-      fr.put(parent, Math.min(span * .9, W * .55, 6), 1.2, .06, M('#2f5d4b'), mid, 1.75, .2);
-      fr.put(parent, Math.min(1.5, span * .8), .8, .6, M('#8a6a4c'), mid, .46, 1.05);
+      if (!noBoard) {
+        fr.put(parent, Math.min(span * .9, W * .55, 6), 1.2, .06, M('#2f5d4b'), mid, 1.75, .2);
+        fr.put(parent, Math.min(1.5, span * .8), .8, .6, M('#8a6a4c'), mid, .46, 1.05);
+      }
       const uw = W - 1.6, vd = L - 2.5;
       if (uw < 1.4 || vd < 1) return;
       const cols = clamp(Math.floor(uw / 1.35), 1, 7), rows = clamp(Math.floor(vd / 1.3), 1, 6);
@@ -1615,38 +1651,102 @@ button.danger { color: var(--danger); }
     inst(tables, 2.4, .86, 1.3, .49, '#6d8a84');
   }
   function roomRect(it, room, f) {
-    const g = gridOf(it), a = room.cell;
+    return cellRect(it, f, room.cell);
+  }
+  function cellRect(it, f, a) {
+    const g = gridOf(it);
     const x0 = -it.w / 2 + a.c * g.cw, z0 = rowTop(it, f, a.r), w = a.cs * g.cw, d = a.rs * g.ch;
     return { x0, z0, w, d, x1: x0 + w, z1: z0 + d, cx: x0 + w / 2, cz: z0 + d / 2 };
   }
+  function doorTypeOf(room) {
+    const t = room.door && room.door.type;
+    if (t && t !== 'auto') return t;
+    return room.type === 'cafeteria' ? 'double' : room.type === 'library' ? 'glass' : room.type === 'wc' ? 'wc' : 'wood';
+  }
+  const doorWidth = (room) => (doorTypeOf(room) === 'double' ? 2.4 : 1.3);
   function doorOf(it, f, room) {
-    const g = gridOf(it), a = room.cell, rect = roomRect(it, room, f), others = roomsOf(it, f).filter((o) => o.id !== room.id && o.cell);
+    const g = gridOf(it), rects = roomRects(room), others = roomsOf(it, f).filter((o) => o.id !== room.id && o.cell);
+    const own = (c, r) => rects.some((a) => c >= a.c && c < a.c + a.cs && r >= a.r && r < a.r + a.rs);
     const free = (c, r) => {
       if (c < 0 || c >= g.cols || r < 0 || r >= g.rows) return false;
       if (g.mask && !g.mask[r][c]) return false;
-      return !others.some((o) => c >= o.cell.c && c < o.cell.c + o.cell.cs && r >= o.cell.r && r < o.cell.r + o.cell.rs);
+      return !own(c, r) && !others.some((o) => roomHits(o, { c, r, cs: 1, rs: 1 }));
     };
     const colX = (c) => -it.w / 2 + (c + .5) * g.cw, rowZ = (r) => rowTop(it, f, r) + g.ch / 2;
-    const front = (c) => ({ side: 'front', x: colX(c), z: rect.z1, ry: 0, nx: 0, nz: 1 });
-    const back = (c) => ({ side: 'back', x: colX(c), z: rect.z0, ry: Math.PI, nx: 0, nz: -1 });
+    const front = (a, c) => ({ side: 'front', x: colX(c), z: cellRect(it, f, a).z1, ry: 0, nx: 0, nz: 1 });
+    const back = (a, c) => ({ side: 'back', x: colX(c), z: cellRect(it, f, a).z0, ry: Math.PI, nx: 0, nz: -1 });
+    const left = (a, r) => ({ side: 'left', x: cellRect(it, f, a).x0, z: rowZ(r), ry: -Math.PI / 2, nx: -1, nz: 0 });
+    const right = (a, r) => ({ side: 'right', x: cellRect(it, f, a).x1, z: rowZ(r), ry: Math.PI / 2, nx: 1, nz: 0 });
+    const want = room.door && room.door.side && room.door.side !== 'auto' ? room.door : null;
+    if (want) {
+      const R = cellRect(it, f, room.cell), edge = doorWidth(room) / 2 + .35;
+      const along = (len) => clamp((want.t === undefined ? .5 : want.t) * len, Math.min(edge, len / 2), Math.max(len - edge, len / 2));
+      if (want.side === 'back') return { side: 'back', x: R.x0 + along(R.w), z: R.z0, ry: Math.PI, nx: 0, nz: -1 };
+      if (want.side === 'left') return { side: 'left', x: R.x0, z: R.z0 + along(R.d), ry: -Math.PI / 2, nx: -1, nz: 0 };
+      if (want.side === 'right') return { side: 'right', x: R.x1, z: R.z0 + along(R.d), ry: Math.PI / 2, nx: 1, nz: 0 };
+      return { side: 'front', x: R.x0 + along(R.w), z: R.z1, ry: 0, nx: 0, nz: 1 };
+    }
     if (!it.outline) {
       const cr = corridorRow(it, f);
-      if (a.r + a.rs === cr) return front(a.c);
-      if (a.r === cr) return back(a.c);
+      for (const a of rects) {
+        if (a.r + a.rs === cr) return front(a, a.c);
+        if (a.r === cr) return back(a, a.c);
+      }
     }
     if (it.outline && hallSet(it, f).size) {
       const h = (c, r) => hallSet(it, f).has(`${c},${r}`);
-      for (let c = a.c; c < a.c + a.cs; c++) if (h(c, a.r + a.rs)) return front(c);
-      for (let r = a.r + a.rs - 1; r >= a.r; r--) if (h(a.c - 1, r)) return { side: 'left', x: rect.x0, z: rowZ(r), ry: -Math.PI / 2, nx: -1, nz: 0 };
-      for (let r = a.r + a.rs - 1; r >= a.r; r--) if (h(a.c + a.cs, r)) return { side: 'right', x: rect.x1, z: rowZ(r), ry: Math.PI / 2, nx: 1, nz: 0 };
-      for (let c = a.c; c < a.c + a.cs; c++) if (h(c, a.r - 1)) return back(c);
+      for (const a of rects) {
+        for (let c = a.c; c < a.c + a.cs; c++) if (h(c, a.r + a.rs)) return front(a, c);
+        for (let r = a.r + a.rs - 1; r >= a.r; r--) if (h(a.c - 1, r)) return left(a, r);
+        for (let r = a.r + a.rs - 1; r >= a.r; r--) if (h(a.c + a.cs, r)) return right(a, r);
+        for (let c = a.c; c < a.c + a.cs; c++) if (h(c, a.r - 1)) return back(a, c);
+      }
     }
-    const crossFront = !it.outline && a.r + a.rs === corridorRow(it, f);
-    for (let c = a.c; c < a.c + a.cs; c++) if (!crossFront && free(c, a.r + a.rs)) return front(c);
-    for (let r = a.r + a.rs - 1; r >= a.r; r--) if (free(a.c - 1, r)) return { side: 'left', x: rect.x0, z: rowZ(r), ry: -Math.PI / 2, nx: -1, nz: 0 };
-    for (let r = a.r + a.rs - 1; r >= a.r; r--) if (free(a.c + a.cs, r)) return { side: 'right', x: rect.x1, z: rowZ(r), ry: Math.PI / 2, nx: 1, nz: 0 };
-    for (let c = a.c; c < a.c + a.cs; c++) if (free(c, a.r - 1)) return back(c);
-    return front(a.c);
+    for (const a of rects) {
+      const crossFront = !it.outline && a.r + a.rs === corridorRow(it, f);
+      for (let c = a.c; c < a.c + a.cs; c++) if (!crossFront && free(c, a.r + a.rs)) return front(a, c);
+      for (let r = a.r + a.rs - 1; r >= a.r; r--) if (free(a.c - 1, r)) return left(a, r);
+      for (let r = a.r + a.rs - 1; r >= a.r; r--) if (free(a.c + a.cs, r)) return right(a, r);
+      for (let c = a.c; c < a.c + a.cs; c++) if (free(c, a.r - 1)) return back(a, c);
+    }
+    return front(room.cell, room.cell.c);
+  }
+  const GLASS_M = new THREE.MeshLambertMaterial({ color: '#cfeaf2', transparent: true, opacity: .6 });
+  GLASS_M.userData.keep = true;
+  function buildRoomDoor(dg, room) {
+    const t = doorTypeOf(room), frameM = M('#3b4a50'), handleM = M('#c8d0d3');
+    if (t === 'glass') {
+      box(dg, 1.3, 2.3, .06, frameM, 0, 1.17, .1, true);
+      box(dg, 1.1, 2.1, .07, GLASS_M, 0, 1.12, .12, true);
+      box(dg, .05, .4, .05, handleM, .4, 1.1, .17, true);
+    } else if (t === 'double') {
+      box(dg, 2.4, 2.4, .06, frameM, 0, 1.2, .1, true);
+      [-.56, .56].forEach((x) => box(dg, 1.04, 2.2, .07, GLASS_M, x, 1.14, .12, true));
+      [-.12, .12].forEach((x) => box(dg, .05, .45, .05, handleM, x, 1.1, .17, true));
+    } else if (t === 'sliding') {
+      box(dg, .7, 2.15, .06, M('#8a6a4c'), -.25, 1.2, .12, true);
+      box(dg, .7, 2.15, .06, M('#7c5a3c'), .3, 1.2, .17, true);
+      box(dg, .3, .6, .07, M('#a8cbd8'), .3, 1.6, .205, true);
+    } else if (t === 'open') {
+      [-.62, .62].forEach((x) => box(dg, .1, 2.3, .12, frameM, x, 1.15, .1, true));
+      box(dg, 1.34, .1, .12, frameM, 0, 2.3, .1, true);
+    } else {
+      box(dg, 1.15, 2.15, .08, M(t === 'wc' ? '#5f8fa5' : '#7c5a3c'), 0, 1.2, .12, true);
+      box(dg, .34, .62, .09, M('#a8cbd8'), .22, 1.62, .125, true);
+    }
+  }
+  function mergedWalls(g, it, f, room, h, wallM) {
+    const rects = roomRects(room), gg = gridOf(it);
+    const own = (c, r) => rects.some((a) => c >= a.c && c < a.c + a.cs && r >= a.r && r < a.r + a.rs);
+    rects.forEach((a) => {
+      for (let r = a.r; r < a.r + a.rs; r++) for (let c = a.c; c < a.c + a.cs; c++) {
+        const q = cellRect(it, f, { c, r, cs: 1, rs: 1 });
+        if (!own(c, r - 1)) box(g, gg.cw + .16, h, .16, wallM, q.cx, h / 2, q.z0);
+        if (!own(c, r + 1)) box(g, gg.cw + .16, h, .16, wallM, q.cx, h / 2, q.z1);
+        if (!own(c - 1, r)) box(g, .16, h, gg.ch + .16, wallM, q.x0, h / 2, q.cz);
+        if (!own(c + 1, r)) box(g, .16, h, gg.ch + .16, wallM, q.x1, h / 2, q.cz);
+      }
+    });
   }
   function buildInterior() {
     plates.clear();
@@ -1688,18 +1788,22 @@ button.danger { color: var(--danger); }
     if (pil) pilotisColumns(g, it, M(st.wall), it.h);
     rooms.forEach((room, i) => {
       if (!room.cell) return;
-      const r = roomRect(it, room, f), door = doorOf(it, f, room);
-      box(g, r.w - .16, .02, r.d - .16, M(ROOM_TINT[room.type] || ROOM_TINT.etc), r.cx, .115, r.cz, true);
+      const r = roomRect(it, room, f), door = doorOf(it, f, room), rects = roomRects(room);
+      rects.forEach((a) => { const q = cellRect(it, f, a); box(g, q.w - .16, .02, q.d - .16, M(ROOM_TINT[room.type] || ROOM_TINT.etc), q.cx, .115, q.cz, true); });
       const openSide = room.type === 'stairs' ? door.side : null, headH = Math.max(.3, h - 2.35);
       const wall = (side, sx, sz, x, z) => {
         if (side === openSide) box(g, sx, headH, sz, wallM, x, h - headH / 2, z);
         else box(g, sx, h, sz, wallM, x, h / 2, z);
       };
-      wall('back', r.w, .16, r.cx, r.z0);
-      wall('front', r.w, .16, r.cx, r.z1);
-      wall('left', .16, r.d, r.x0, r.cz);
-      wall('right', .16, r.d, r.x1, r.cz);
+      if (rects.length > 1) mergedWalls(g, it, f, room, h, wallM);
+      else {
+        wall('back', r.w, .16, r.cx, r.z0);
+        wall('front', r.w, .16, r.cx, r.z1);
+        wall('left', .16, r.d, r.x0, r.cz);
+        wall('right', .16, r.d, r.x1, r.cz);
+      }
       furnish(g, room, r.x0, r.z0, r.w, r.d, door, f === it.floors - 1);
+      rects.slice(1).forEach((a) => { const q = cellRect(it, f, a); furnish(g, room, q.x0, q.z0, q.w, q.d, door, f === it.floors - 1, { noBoard: true }); });
       const dg = new THREE.Group();
       dg.position.set(door.x, 0, door.z);
       dg.rotation.y = door.ry;
@@ -1707,10 +1811,7 @@ button.danger { color: var(--danger); }
         box(dg, 1.75, 2.35, .08, M('#6d777b'), 0, 1.3, .1, true);
         [-.4, .4].forEach((x) => box(dg, .76, 2.2, .06, M('#c8d0d3'), x, 1.24, .15, true));
         box(dg, .12, .2, .05, M('#2f4148'), 1.05, 1.25, .12, true);
-      } else if (room.type !== 'stairs') {
-        box(dg, 1.15, 2.15, .08, M(room.type === 'wc' ? '#5f8fa5' : '#7c5a3c'), 0, 1.2, .12, true);
-        box(dg, .34, .62, .09, M('#a8cbd8'), .22, 1.62, .125, true);
-      }
+      } else if (room.type !== 'stairs') buildRoomDoor(dg, room);
       addPlate(dg, it, f, i, room, 0, .09, st);
       g.add(dg);
       if (room.type !== 'stairs' && (door.side === 'front' || door.side === 'back') && r.w > 5) {
@@ -1724,7 +1825,7 @@ button.danger { color: var(--danger); }
   }
 
   /* ---------- 위치 점 ---------- */
-  let plateRoom = null, hallPaint = false;
+  let plateRoom = null, hallPaint = false, mergeMode = false;
   const markerMat = (color, opacity) => new THREE.MeshBasicMaterial({ color, transparent: true, opacity, depthTest: false, depthWrite: false });
   const marker = new THREE.Group();
   const markerDot = new THREE.Mesh(new THREE.SphereGeometry(1, 20, 14), markerMat('#e5261a', 1));
@@ -1872,6 +1973,7 @@ button.danger { color: var(--danger); }
     step = s;
     document.querySelector('.layout').classList.toggle('half', s === 'rooms');
     hallPaint = false;
+    mergeMode = false;
     resize();
     plateRoom = null;
     focus = { id: null, floor: null, room: null };
@@ -2135,7 +2237,7 @@ button.danger { color: var(--danger); }
       toast(`1층을 필로티로 바꿨습니다.${grow ? ' 2층 건물이 되었고 1층 교실은 2층으로 옮겼습니다.' : ''}${it.pilotisStash.length ? ` 1층 교실 ${it.pilotisStash.length}개는 숨겨 두었고, 필로티를 끄면 돌아옵니다.` : ''}`);
     } else {
       const cores = roomsOf(it, 0), back = it.pilotisStash || [];
-      back.forEach((r) => { if (r.cell && cores.some((o) => o.cell && cellsOverlap(o.cell, r.cell))) r.cell = undefined; });
+      back.forEach((r) => { if (r.cell && cores.some((o) => o.cell && roomsClash(o, r))) { r.cell = undefined; r.more = null; } });
       it.rooms[0] = back.concat(cores);
       delete it.pilotisStash;
       it.pilotis = false;
@@ -2490,27 +2592,65 @@ button.danger { color: var(--danger); }
     if (plateRoom) viewFloor(it, f);
     else updateMarker();
   }
+  function mergeProblem(it, f, room, rect) {
+    const g = gridOf(it), rects = roomRects(room);
+    if (!insideGrid(rect, g) || !cellInMask(rect, g)) return '건물 밖 칸은 합칠 수 없습니다.';
+    if (crossesCorridor(it, f, rect)) return '복도를 가로질러 합칠 수 없습니다.';
+    if (cellHitsHall(it, f, rect)) return '복도 칸은 합칠 수 없습니다.';
+    if (rects.some((a) => cellsOverlap(a, rect))) return '이미 이 교실에 포함된 칸입니다.';
+    if (!fitsCell(it, f, rect, room.id)) return '다른 교실이 있는 칸은 합칠 수 없습니다.';
+    if (!rects.some((a) => rectsTouch(a, rect))) return '선택한 교실과 맞닿은 칸만 합칠 수 있습니다.';
+    if (!it.outline) {
+      const cr = corridorRow(it, f), side = (a) => (a.r < cr ? 0 : 1);
+      if (side(rect) !== side(room.cell)) return '복도 건너편 칸은 합칠 수 없습니다.';
+    }
+    return '';
+  }
   function boardEditor(it, f) {
     const wrap = el('div', { 'data-board-editor': '' });
     const room = roomsOf(it, f).find((r) => r.id === focus.room);
-    if (!room || !BOARD_TYPES.includes(room.type) || !room.cell) {
-      wrap.append(el('p', { class: 'plan-note' }, '교실이나 과학실, 음악실 같은 특별실을 선택하면 칠판 위치와 책상 방향을 바꿀 수 있습니다.'));
+    const after = () => { refreshRooms(); if (plateRoom) viewFloor(it, f); };
+    if (!room || !room.cell) {
+      wrap.append(el('p', { class: 'plan-note' }, '교실을 선택하면 칠판 위치, 출입문, 칸 합치기를 정할 수 있습니다.'));
       return wrap;
     }
-    const current = boardOf(room, doorOf(it, f, room));
-    const after = () => { refreshRooms(); if (plateRoom) viewFloor(it, f); };
-    const sides = [['back', '위쪽'], ['front', '아래쪽'], ['left', '왼쪽'], ['right', '오른쪽']];
-    wrap.append(el('h3', {}, `${room.name} 칠판 위치`), el('div', { class: 'chips', role: 'group', 'aria-label': '칠판 위치' }, sides.map(([side, label]) => el('button', {
-      class: 'chip', type: 'button', 'aria-pressed': current === side,
-      onclick: () => { if (current !== side) { room.board = side; after(); } }
-    }, label))));
-    const others = roomsOf(it, f).filter((r) => BOARD_TYPES.includes(r.type) && r.cell && r !== room);
-    if (others.length) wrap.append(el('button', { class: 'wide', type: 'button', onclick: () => {
-      others.forEach((r) => { r.board = current; });
-      room.board = current;
-      after();
-      toast(`${f + 1}층 교실 ${others.length + 1}개의 칠판 방향을 맞췄습니다.`);
-    } }, '이 칠판 방향을 이 층 모든 교실에 적용'));
+    if (BOARD_TYPES.includes(room.type)) {
+      const current = boardOf(room, doorOf(it, f, room));
+      const sides = [['back', '위쪽'], ['front', '아래쪽'], ['left', '왼쪽'], ['right', '오른쪽']];
+      wrap.append(el('h3', {}, `${room.name} 칠판 위치`), el('div', { class: 'chips', role: 'group', 'aria-label': '칠판 위치' }, sides.map(([side, label]) => el('button', {
+        class: 'chip', type: 'button', 'aria-pressed': current === side,
+        onclick: () => { if (current !== side) { room.board = side; after(); } }
+      }, label))));
+      const others = roomsOf(it, f).filter((r) => BOARD_TYPES.includes(r.type) && r.cell && r !== room);
+      if (others.length) wrap.append(el('button', { class: 'wide', type: 'button', onclick: () => {
+        others.forEach((r) => { r.board = current; });
+        room.board = current;
+        after();
+        toast(`${f + 1}층 교실 ${others.length + 1}개의 칠판 방향을 맞췄습니다.`);
+      } }, '이 칠판 방향을 이 층 모든 교실에 적용'));
+    }
+    if (room.type !== 'elevator' && room.type !== 'stairs') {
+      const d = room.door || {}, setDoor = (patch, live) => {
+        room.door = Object.assign({ type: 'auto', side: 'auto', t: .5 }, room.door, patch);
+        if (live) { buildInterior(); return; }
+        after();
+      };
+      const slider = el('input', { type: 'range', min: 0, max: 100, step: 5, value: Math.round((d.t === undefined ? .5 : d.t) * 100), 'aria-label': '문 위치',
+        oninput: (e) => setDoor({ t: Number(e.target.value) / 100 }, true), onchange: () => after() });
+      slider.disabled = !d.side || d.side === 'auto';
+      wrap.append(el('h3', {}, `${room.name} 출입문`),
+        el('div', { class: 'cols two' },
+          field('문 종류', selectEl(d.type || 'auto', ROOM_DOORS, (v) => setDoor({ type: v }), '문 종류')),
+          field('문 위치', selectEl(d.side || 'auto', ROOM_DOOR_SIDES, (v) => setDoor({ side: v }), '문이 있는 벽'))),
+        field(slider.disabled ? '벽 안의 위치 (벽을 고르면 바꿀 수 있습니다)' : '벽 안의 위치 (왼쪽·위 ↔ 오른쪽·아래)', slider));
+    }
+    if (!FIXED_ROOMS.includes(room.type)) {
+      wrap.append(el('h3', {}, `${room.name} 칸 합치기`),
+        el('p', { class: 'plan-note' }, mergeMode ? '선택한 교실과 맞닿은 빈칸을 누르거나 끌면 교실에 합쳐집니다. ㄱ자, ㄷ자 교실을 만들 수 있습니다.' : '칸 합치기를 켜면 교실 옆 빈칸을 붙여 ㄱ자나 ㄷ자 교실을 만들 수 있습니다.'),
+        el('div', { class: 'actions', style: 'margin-top:0' },
+          el('button', { type: 'button', class: mergeMode ? 'primary' : '', 'aria-pressed': mergeMode, onclick: () => { mergeMode = !mergeMode; hallPaint = false; renderPanel(); } }, mergeMode ? '합치기 끝내기' : '칸 합치기'),
+          el('button', { type: 'button', disabled: !room.more, onclick: () => { room.more = null; after(); } }, '합친 칸 풀기')));
+    }
     return wrap;
   }
   function facilitySize(it, type) {
@@ -2536,7 +2676,7 @@ button.danger { color: var(--danger); }
         }
       }
     }
-    const donors = roomsOf(it, f).filter((o) => o.cell && o.cell.cs > cs && !FIXED_ROOMS.includes(o.type) && (it.outline || o.cell.r + o.cell.rs === cr || o.cell.r === cr));
+    const donors = roomsOf(it, f).filter((o) => o.cell && !o.more && o.cell.cs > cs && !FIXED_ROOMS.includes(o.type) && (it.outline || o.cell.r + o.cell.rs === cr || o.cell.r === cr));
     donors.sort((a, b) => b.cell.cs * b.cell.rs - a.cell.cs * a.cell.rs);
     for (const donor of donors) {
       const a = donor.cell, height = Math.min(rs, a.rs);
@@ -2551,7 +2691,8 @@ button.danger { color: var(--danger); }
   }
   function clearCellFor(it, f, target) {
     if (!insideGrid(target, gridOf(it)) || !cellInMask(target, gridOf(it)) || crossesCorridor(it, f, target) || cellHitsHall(it, f, target)) return false;
-    const conflicts = roomsOf(it, f).filter((o) => o.cell && cellsOverlap(o.cell, target));
+    const conflicts = roomsOf(it, f).filter((o) => o.cell && roomHits(o, target));
+    if (conflicts.some((o) => o.more)) return false;
     const plans = [];
     for (const room of conflicts) {
       if (FIXED_ROOMS.includes(room.type)) return false;
@@ -2637,6 +2778,7 @@ button.danger { color: var(--danger); }
     });
     const entries = [];
     for (let n = 0; n < it.floors; n++) roomsOf(it, n).forEach((r) => { if (r.cell) entries.push({ n, r }); });
+    const boxes = new Map(entries.map(({ r }) => [r, roomBox(r)]));
     const linkCols = new Map();
     entries.forEach(({ r }) => {
       if (!r.link || !FIXED_ROOMS.includes(r.type)) return;
@@ -2649,7 +2791,7 @@ button.danger { color: var(--danger); }
     const threshold = shared.length ? Math.min(...shared) : Infinity;
     const pos = new Map();
     entries.forEach(({ n, r }) => {
-      const key = keyOf(r), c = r.cell.c;
+      const key = keyOf(r), c = boxes.get(r).c;
       const pulled = shrink && key !== anchorKey && (n === f ? c > pivot : c >= threshold);
       const low = pulled ? Math.max(0, c - shrink) : c;
       pos.set(key, pos.has(key) ? Math.min(pos.get(key), low) : low);
@@ -2658,7 +2800,11 @@ button.danger { color: var(--danger); }
     for (let n = 0; n < it.floors; n++) {
       const list = entries.filter((e) => e.n === n).map((e) => e.r);
       list.forEach((x) => list.forEach((y) => {
-        if (x !== y && x.cell.c < y.cell.c && x.cell.r < y.cell.r + y.cell.rs && y.cell.r < x.cell.r + x.cell.rs) edges.push([keyOf(x), keyOf(y), x.cell.cs]);
+        if (x === y) return;
+        const bx = boxes.get(x), by = boxes.get(y);
+        roomRects(x).forEach((rx) => roomRects(y).forEach((ry) => {
+          if (rx.c < ry.c && rx.r < ry.r + ry.rs && ry.r < rx.r + rx.rs) edges.push([keyOf(x), keyOf(y), (rx.c - bx.c) + rx.cs - (ry.c - by.c)]);
+        }));
       }));
     }
     for (let pass = 0, changed = true; changed && pass <= pos.size + 1; pass++) {
@@ -2667,7 +2813,7 @@ button.danger { color: var(--danger); }
         if (pos.get(y) < pos.get(x) + w) { pos.set(y, pos.get(x) + w); changed = true; }
       });
     }
-    entries.forEach(({ r }) => { r.cell = { c: pos.get(keyOf(r)), r: r.cell.r, cs: r.cell.cs, rs: r.cell.rs }; });
+    entries.forEach(({ r }) => { const b = boxes.get(r); r.cell = shiftedCell(r, b, { c: pos.get(keyOf(r)), r: b.r }); });
   }
   function fitBuildingWidth(it, cols) {
     if (cols === gridFor(it.w, it.d, false).cols) return true;
@@ -2683,25 +2829,26 @@ button.danger { color: var(--danger); }
   }
   function neededCols(it) {
     let n = 2;
-    for (let f = 0; f < it.floors; f++) roomsOf(it, f).forEach((r) => { if (r.cell) n = Math.max(n, r.cell.c + r.cell.cs); });
+    for (let f = 0; f < it.floors; f++) roomsOf(it, f).forEach((r) => { if (r.cell) { const b = roomBox(r); n = Math.max(n, b.c + b.cs); } });
     return n;
   }
   function roomsValid(it) {
     for (let f = 0; f < it.floors; f++) {
       const list = roomsOf(it, f).filter((r) => r.cell);
-      if (list.some((a, i) => list.some((b, j) => j > i && cellsOverlap(a.cell, b.cell)))) return false;
+      if (list.some((a, i) => list.some((b, j) => j > i && roomsClash(a, b)))) return false;
     }
     return true;
   }
   function setRoomSize(it, f, room, cs) {
     if (!room.cell || room.cell.cs === cs) return;
+    if (room.more) { toast('칸을 합친 교실은 크기 목록 대신 격자에서 칸을 더하거나 풀어 주세요.'); renderPanel(); return; }
     const saved = JSON.stringify(it.rooms), oldW = it.w, grew = cs > room.cell.cs;
     const fail = (msg) => { it.rooms = JSON.parse(saved); toast(msg); renderPanel(); };
     reflowRooms(it, f, room, cs);
     if (!roomsValid(it)) { fail('다른 시설과 겹쳐 크기를 바꿀 수 없습니다.'); return; }
     if (it.outline) {
       const g = gridOf(it);
-      const ok = Object.keys(it.rooms).every((n) => it.rooms[n].every((r) => !r.cell || (insideGrid(r.cell, g) && cellInMask(r.cell, g) && !cellHitsHall(it, Number(n), r.cell))));
+      const ok = Object.keys(it.rooms).every((n) => it.rooms[n].every((r) => roomRects(r).every((a) => insideGrid(a, g) && cellInMask(a, g) && !cellHitsHall(it, Number(n), a))));
       if (!ok) { fail('꺾인 건물은 크기가 자동으로 늘어나지 않습니다. 빈칸이 있는 자리로 옮겨 주세요.'); return; }
       refreshRooms();
       return;
@@ -2727,10 +2874,12 @@ button.danger { color: var(--danger); }
     const isFixed = (r) => FIXED_ROOMS.includes(r.type);
     const mid = pointerCol !== undefined ? pointerCol + .5 : target.c + target.cs / 2;
     let lo = -Infinity, hi = Infinity;
+    const boxes = new Map(others.map((r) => [r, roomBox(r)]));
     others.forEach((r) => {
-      if (isFixed(r) || !cellsOverlap(r.cell, target)) return;
-      if (mid < r.cell.c + r.cell.cs / 2) hi = Math.min(hi, r.cell.c - .5);
-      else lo = Math.max(lo, r.cell.c + .5);
+      const b = boxes.get(r);
+      if (isFixed(r) || !roomHits(r, target)) return;
+      if (mid < b.c + b.cs / 2) hi = Math.min(hi, b.c - .5);
+      else lo = Math.max(lo, b.c + .5);
     });
     const fixedCells = others.filter(isFixed).map((r) => r.cell)
       .concat([...hallSet(it, f)].map((k) => { const [c, r] = k.split(',').map(Number); return { c, r, cs: 1, rs: 1 }; }));
@@ -2743,12 +2892,13 @@ button.danger { color: var(--danger); }
       }
       return n;
     };
-    const normal = others.filter((r) => !isFixed(r)).sort((x, y) => x.cell.c - y.cell.c);
+    const normal = others.filter((r) => !isFixed(r)).sort((x, y) => boxes.get(x).c - boxes.get(y).c);
     const items = normal.map((r, i) => {
-      const prevEnd = normal.slice(0, i).filter((o) => rowsHit(o.cell, r.cell)).reduce((m, o) => Math.max(m, o.cell.c + o.cell.cs), 0);
+      const b = boxes.get(r);
+      const prevEnd = normal.slice(0, i).filter((o) => rowsHit(boxes.get(o), b)).reduce((m, o) => Math.max(m, boxes.get(o).c + boxes.get(o).cs), 0);
       let gap = 0;
-      for (let col = r.cell.c - 1; col >= prevEnd && !blocked(r.cell, col, col + 1); col--) gap++;
-      return { r, k: r.cell.c, cell: r.cell, gap };
+      for (let col = b.c - 1; col >= prevEnd && !blocked(b, col, col + 1); col--) gap++;
+      return { r, k: b.c, cell: b, gap };
     });
     items.push({ r: room, k: Math.min(Math.max(target.c, lo), hi), cell: target, gap: 0 });
     items.sort((x, y) => x.k - y.k);
@@ -2761,12 +2911,12 @@ button.danger { color: var(--danger); }
       done.push(cell);
       x.next = cell;
     });
-    items.forEach((x) => { x.r.cell = x.next; });
+    items.forEach((x) => { x.r.cell = x.r === room ? x.next : shiftedCell(x.r, x.cell, x.next); });
     const fail = (msg) => { it.rooms = JSON.parse(saved); return msg; };
     if (!roomsValid(it)) return fail('그 자리에는 놓을 수 없습니다.');
     if (it.outline) {
       const g = gridOf(it);
-      if (!roomsOf(it, f).every((r) => !r.cell || (insideGrid(r.cell, g) && cellInMask(r.cell, g) && !cellHitsHall(it, f, r.cell)))) return fail('꺾인 건물 안에 자리가 부족합니다.');
+      if (!roomsOf(it, f).every((r) => roomRects(r).every((a) => insideGrid(a, g) && cellInMask(a, g) && !cellHitsHall(it, f, a)))) return fail('꺾인 건물 안에 자리가 부족합니다.');
     } else {
       const need = neededCols(it);
       if (need > MAX_COLS) return fail(`건물 가로는 교실 ${MAX_COLS / 2}칸까지 늘릴 수 있습니다.`);
@@ -2797,6 +2947,10 @@ button.danger { color: var(--danger); }
   function trimRoomsForHall(it, f) {
     let trimmed = 0, lost = 0;
     roomsOf(it, f).forEach((room) => {
+      if (room.more && room.more.length) {
+        const keep = room.more.filter((m) => !cellHitsHall(it, f, { c: room.cell.c + m.dc, r: room.cell.r + m.dr, cs: m.cs, rs: m.rs }));
+        if (keep.length !== room.more.length) { room.more = keep.length ? keep : null; trimmed++; }
+      }
       if (!room.cell || !cellHitsHall(it, f, room.cell)) return;
       const a = room.cell;
       let best = null;
@@ -2844,7 +2998,7 @@ button.danger { color: var(--danger); }
     for (let r = rect.r; r < rect.r + rect.rs; r++) for (let c = rect.c; c < rect.c + rect.cs; c++) {
       if (g.mask && !(g.mask[r] && g.mask[r][c])) continue;
       const key = `${c},${r}`;
-      if (value && roomsOf(it, f).some((o) => o.cell && cellsOverlap(o.cell, { c, r, cs: 1, rs: 1 }))) { blocked++; continue; }
+      if (value && roomsOf(it, f).some((o) => o.cell && roomHits(o, { c, r, cs: 1, rs: 1 }))) { blocked++; continue; }
       if (value !== next.has(key)) { if (value) next.add(key); else next.delete(key); changed++; }
     }
     if (!changed) { if (blocked) toast('교실이 있는 칸은 복도로 바꿀 수 없습니다. 교실을 옮기거나 줄인 뒤 칠해 주세요.'); return; }
@@ -2884,7 +3038,7 @@ button.danger { color: var(--danger); }
   }
   function planEl(it, f) {
     const g = gridOf(it), rooms = roomsOf(it, f);
-    const plan = el('div', { class: 'plan' + (hallPaint && it.outline ? ' painting' : ''), role: 'group', 'aria-label': `${f + 1}층 평면 격자` });
+    const plan = el('div', { class: 'plan' + (hallPaint && it.outline ? ' painting' : '') + (mergeMode ? ' merging' : ''), role: 'group', 'aria-label': `${f + 1}층 평면 격자` });
     plan.style.setProperty('--c', g.cols);
     plan.style.setProperty('--r', g.rows);
     const cr = corridorRow(it, f), corridorH = it.outline ? 0 : CORR;
@@ -2938,7 +3092,7 @@ button.danger { color: var(--danger); }
           e.preventDefault();
           const a = room.cell;
           const next = e.shiftKey ? { c: a.c, r: a.r, cs: a.cs + key[0], rs: a.rs + key[1] } : { c: a.c + key[0], r: a.r + key[1], cs: a.cs, rs: a.rs };
-          if (!fitsCell(it, f, next, room.id)) return;
+          if (!fitsRoomAt(it, f, room, next)) return;
           room.cell = next;
           syncLinkedCell(it, f, room);
           refreshRooms();
@@ -2951,6 +3105,19 @@ button.danger { color: var(--danger); }
       b.style.background = ROOM_TINT[room.type] || ROOM_TINT.etc;
       place(b, room.cell);
       plan.append(b);
+      roomRects(room).slice(1).forEach((a) => {
+        const x = el('div', { class: 'plan-room plan-extra' + (on ? ' active' : '') });
+        x.dataset.planRoom = room.id;
+        x.style.background = b.style.background;
+        place(x, a);
+        plan.append(x);
+      });
+      if (room.type !== 'elevator' && room.type !== 'stairs') {
+        const dp = doorOf(it, f, room), mark = el('div', { class: 'plan-door ' + (dp.side === 'front' || dp.side === 'back' ? 'h' : 'v') });
+        mark.style.left = `${(dp.x + it.w / 2) / it.w * 100}%`;
+        mark.style.top = `${(dp.z + it.d / 2) / it.d * 100}%`;
+        plan.append(mark);
+      }
     });
     const preview = el('div', { class: 'plan-preview', hidden: true });
     plan.append(preview);
@@ -2968,6 +3135,13 @@ button.danger { color: var(--danger); }
       if (e.button !== 0) return;
       const [c, r] = cellAt(e);
       const block = e.target.closest('.plan-room');
+      const selected = rooms.find((x) => x.id === focus.room && x.cell);
+      if (mergeMode && selected && !(block && block.dataset.planRoom !== selected.id)) {
+        gesture = { mode: 'merge', room: selected, c, r, rect: { c, r, cs: 1, rs: 1 }, moved: false };
+        plan.setPointerCapture(e.pointerId);
+        e.preventDefault();
+        return;
+      }
       if (hallPaint && it.outline) {
         gesture = { mode: 'paint', c, r, rect: { c, r, cs: 1, rs: 1 }, moved: false, value: !hallSet(it, f).has(`${c},${r}`) };
         plan.setPointerCapture(e.pointerId);
@@ -3002,8 +3176,15 @@ button.danger { color: var(--danger); }
       if (!a.moved) return;
       place(preview, rect);
       preview.hidden = false;
-      const fits = fitsCell(it, f, rect, a.room ? a.room.id : null);
-      const canInsert = !fits && a.mode === 'move' && !FIXED_ROOMS.includes(a.room.type) && !crossesCorridor(it, f, rect);
+      if (a.mode === 'merge') {
+        preview.classList.remove('insert', 'hall');
+        preview.classList.toggle('merge', !mergeProblem(it, f, a.room, rect));
+        preview.classList.toggle('bad', !!mergeProblem(it, f, a.room, rect));
+        return;
+      }
+      preview.classList.remove('merge');
+      const fits = a.room && (a.mode === 'move' || a.mode === 'resize') ? fitsRoomAt(it, f, a.room, rect) : fitsCell(it, f, rect, a.room ? a.room.id : null);
+      const canInsert = !fits && a.mode === 'move' && !a.room.more && !FIXED_ROOMS.includes(a.room.type) && !crossesCorridor(it, f, rect);
       preview.classList.toggle('insert', canInsert);
       preview.classList.toggle('bad', !fits && !canInsert && a.mode !== 'paint');
       preview.classList.toggle('hall', a.mode === 'paint');
@@ -3016,6 +3197,13 @@ button.danger { color: var(--danger); }
       preview.hidden = true;
       if (e.type === 'pointercancel') return;
       if (a.mode === 'paint') { paintHall(it, f, a.rect, a.value); return; }
+      if (a.mode === 'merge') {
+        const problem = mergeProblem(it, f, a.room, a.rect);
+        if (problem) { toast(problem); return; }
+        a.room.more = (a.room.more || []).concat({ dc: a.rect.c - a.room.cell.c, dr: a.rect.r - a.room.cell.r, cs: a.rect.cs, rs: a.rect.rs });
+        refreshRooms();
+        return;
+      }
       if (a.mode !== 'new' && !a.moved) return;
       let rect = a.rect;
       if (a.mode === 'new' && !a.moved) {
@@ -3027,7 +3215,9 @@ button.danger { color: var(--danger); }
           }
         }
       }
-      if (!rect || !fitsCell(it, f, rect, a.room ? a.room.id : null)) {
+      const okHere = rect && (a.room && (a.mode === 'move' || a.mode === 'resize') ? fitsRoomAt(it, f, a.room, rect) : fitsCell(it, f, rect, a.room ? a.room.id : null));
+      if (!okHere) {
+        if (rect && a.mode === 'move' && a.room.more) { toast('칸을 합친 교실은 빈칸으로만 옮길 수 있습니다.'); return; }
         if (rect && a.mode === 'move' && !FIXED_ROOMS.includes(a.room.type)) {
           const widthBefore = it.w, err = insertRoom(it, f, a.room, rect, a.pc);
           if (err) { toast(err); renderPanel(); return; }
@@ -3122,8 +3312,9 @@ button.danger { color: var(--danger); }
     if (unplaced) p.append(el('p', { class: 'warn' }, `위치 미지정 ${unplaced}개: 교실을 선택한 뒤 격자의 빈칸을 눌러 주세요.`));
     p.append(el('div', { class: 'list' }, rooms.map((room, i) => {
       const sizeSel = selectEl(room.cell ? room.cell.cs : '', sizeOptions(room.cell && room.cell.cs), (v) => { if (v) setRoomSize(it, f, room, Number(v)); }, `${roomCode(f, i)} 교실 크기`);
-      sizeSel.disabled = !room.cell;
-      sizeSel.title = room.cell ? '교실 크기' : '먼저 격자에서 위치를 정해 주세요.';
+      sizeSel.disabled = !room.cell || !!room.more;
+      sizeSel.title = room.more ? '칸을 합친 교실입니다.' : room.cell ? '교실 크기' : '먼저 격자에서 위치를 정해 주세요.';
+      if (room.more) sizeSel.replaceChildren(el('option', { value: '' }, '합친 교실'));
       const row = el('div', { class: 'room room-sized' + (focus.room === room.id ? ' active' : '') + (room.cell ? '' : ' unplaced') },
         el('code', { title: room.cell ? '' : '위치 미지정' }, roomBadge(room, f, i)),
         el('input', {
