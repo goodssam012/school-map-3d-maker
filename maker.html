@@ -1166,6 +1166,70 @@ button.danger { color: var(--danger); }
   }
 
   function pilotisColumns(parent, it, mat, height) {
+    const pts = pilotisColumnPoints(it);
+    if (!pts.length) return;
+    const m = new THREE.InstancedMesh(new THREE.BoxGeometry(.6, height, .6), mat, pts.length), mx = new THREE.Matrix4();
+    pts.forEach((p, k) => m.setMatrixAt(k, mx.makeTranslation(p[0], height / 2, p[1])));
+    m.instanceMatrix.needsUpdate = true;
+    m.castShadow = true;
+    parent.add(m);
+  }
+  function instBoxes(g, list, w, h, d, y, mat) {
+    if (!list.length) return;
+    const m = new THREE.InstancedMesh(new THREE.BoxGeometry(w, h, d), mat, list.length), mx = new THREE.Matrix4();
+    list.forEach(([x, z], k) => m.setMatrixAt(k, mx.makeTranslation(x, y, z)));
+    m.instanceMatrix.needsUpdate = true;
+    g.add(m);
+  }
+  const CAR_COLORS = ['#c8ccd0', '#2f3a45', '#9e2f2f', '#f2f2ee', '#4a6d8c', '#6b6f72'];
+  function pilotisParkingLayout(it) {
+    const long = it.w >= it.d, L = long ? it.w : it.d, D = long ? it.d : it.w;
+    const P = (u, v) => (long ? [u, v] : [v, u]);
+    const cols = pilotisColumnPoints(it), poly = it.outline;
+    const cores = roomsOf(it, 0).filter((r) => r.cell).map((r) => cellRect(it, 0, r.cell));
+    const doors = (it.doors || []).map((dr) => Object.assign(doorPoint(it, dr), { clear: (DOOR_HALF[dr.type] || 1.5) + 1.2 }));
+    const rows = [];
+    if (D >= 6.5) rows.push({ v0: -D / 2 + 1, v1: -D / 2 + 6, wall: -1 });
+    if (D >= 18) rows.push({ v0: D / 2 - 6, v1: D / 2 - 1, wall: 1 });
+    const n = Math.max(0, Math.floor((L - 2) / 2.5)), u0 = -n * 2.5 / 2, stalls = [];
+    rows.forEach((row, ri) => {
+      for (let i = 0; i < n; i++) {
+        const a = P(u0 + i * 2.5, row.v0), b = P(u0 + (i + 1) * 2.5, row.v1);
+        const x0 = Math.min(a[0], b[0]), x1 = Math.max(a[0], b[0]), z0 = Math.min(a[1], b[1]), z1 = Math.max(a[1], b[1]);
+        if (poly && ![[x0, z0], [x1, z0], [x1, z1], [x0, z1]].every((p) => pointInPoly(p, poly))) continue;
+        if (cols.some(([x, z]) => x > x0 - .3 && x < x1 + .3 && z > z0 - .3 && z < z1 + .3)) continue;
+        if (cores.some((q) => q.x0 < x1 + .3 && x0 < q.x1 + .3 && q.z0 < z1 + .3 && z0 < q.z1 + .3)) continue;
+        if (doors.some((p) => Math.hypot(p.x - clamp(p.x, x0, x1), p.z - clamp(p.z, z0, z1)) < p.clear)) continue;
+        stalls.push({ i, ri, wall: row.wall, u: u0 + (i + .5) * 2.5, v0: row.v0, v1: row.v1 });
+      }
+    });
+    const labelV = rows.length > 1 ? 0 : rows.length ? (rows[0].v1 + D / 2) / 2 : 0;
+    return { long, P, stalls, label: P(0, labelV), lot: rows.length > 1 ? 2 : 1 };
+  }
+  function pilotisParking(g, it) {
+    const lay = pilotisParkingLayout(it), { P, long } = lay, asphalt = M('#5f666a');
+    if (it.outline) {
+      const m = new THREE.Mesh(polyCapGeometry(it.outline, .1), asphalt);
+      m.receiveShadow = true;
+      g.add(m);
+    } else box(g, it.w - .1, .02, it.d - .1, asphalt, 0, .09, 0, true);
+    const lines = [], stops = [];
+    lay.stalls.forEach((s) => {
+      [s.u - 1.25, s.u + 1.25].forEach((u) => lines.push(P(u, (s.v0 + s.v1) / 2)));
+      stops.push(P(s.u, s.wall < 0 ? s.v0 + .5 : s.v1 - .5));
+    });
+    instBoxes(g, lines, long ? .12 : 5, .01, long ? 5 : .12, .11, M('#f2f2ec'));
+    instBoxes(g, stops, long ? 1.6 : .22, .12, long ? .22 : 1.6, .17, M('#e3c34a'));
+    lay.stalls.forEach((s, k) => {
+      if ((s.i * 7 + s.ri * 3) % 5 > 1) return;
+      const color = M(CAR_COLORS[(s.i + s.ri * 2) % CAR_COLORS.length]), mid = (s.v0 + s.v1) / 2 + s.wall * -.1;
+      const [x, z] = P(s.u, mid), [cx, cz] = P(s.u, mid + s.wall * .35);
+      box(g, long ? 1.8 : 4.2, .75, long ? 4.2 : 1.8, color, x, .55, z);
+      box(g, long ? 1.6 : 2.2, .55, long ? 2.2 : 1.6, M('#33414a'), cx, 1.2, cz);
+    });
+    if (lay.stalls.length) flatLabel(g, 'P 주차장', lay.label[0], .13, lay.label[1], 4.2, '#2f6fb3');
+  }
+  function pilotisColumnPoints(it) {
     const poly = it.outline || [[-it.w / 2, -it.d / 2], [it.w / 2, -it.d / 2], [it.w / 2, it.d / 2], [-it.w / 2, it.d / 2]];
     const pts = [], inside = (p) => pointInPoly(p, poly);
     const add = (p) => { if (inside(p) && !pts.some((q) => Math.hypot(q[0] - p[0], q[1] - p[1]) < 3)) pts.push(p); };
@@ -1181,16 +1245,12 @@ button.danger { color: var(--danger); }
     });
     const sx = Math.max(1, Math.round(it.w / 8)), sz = Math.max(1, Math.round(it.d / 8));
     for (let i = 1; i < sx; i++) for (let j = 1; j < sz; j++) add([-it.w / 2 + i * it.w / sx, -it.d / 2 + j * it.d / sz]);
-    if (!pts.length) return;
-    const m = new THREE.InstancedMesh(new THREE.BoxGeometry(.6, height, .6), mat, pts.length), mx = new THREE.Matrix4();
-    pts.forEach((p, k) => m.setMatrixAt(k, mx.makeTranslation(p[0], height / 2, p[1])));
-    m.instanceMatrix.needsUpdate = true;
-    m.castShadow = true;
-    parent.add(m);
+    return pts;
   }
   function buildPilotisFloor(fg, it, st) {
     const pts = it.outline, trimM = M(st.trim);
     pilotisColumns(fg, it, M(st.wall), it.h - .4);
+    if (it.pilotisParking) pilotisParking(fg, it);
     if (pts) {
       fg.add(new THREE.Mesh(polyCapGeometry(pts, it.h - .42), new THREE.MeshLambertMaterial({ color: st.trim, side: THREE.DoubleSide })));
       pts.forEach((a, i) => edgeBox(fg, a, pts[(i + 1) % pts.length], .42, .3, trimM, it.h - .21));
@@ -2034,6 +2094,7 @@ button.danger { color: var(--danger); }
       box(g, w, .95, .12, M(st.trim), 0, .5, d / 2 - .05);
     }
     if (pil) pilotisColumns(g, it, M(st.wall), it.h);
+    if (pil && it.pilotisParking) pilotisParking(g, it);
     rooms.forEach((room, i) => {
       if (!room.cell) return;
       const r = roomRect(it, room, f), door = doorOf(it, f, room), rects = roomRects(room);
@@ -2480,6 +2541,23 @@ button.danger { color: var(--danger); }
     commit();
     renderPanel();
   }
+  function parkingToggle(it) {
+    return el('label', { class: 'check' },
+      el('input', { type: 'checkbox', checked: !!it.pilotisParking, onchange: (e) => {
+        it.pilotisParking = e.target.checked;
+        rebuildItem(it);
+        buildInterior();
+        applyFocus();
+        updateSelection();
+        commit();
+        renderPanel();
+        if (it.pilotisParking) {
+          const n = pilotisParkingLayout(it).stalls.length;
+          toast(n ? `1층 필로티에 주차 칸 ${n}개를 그렸습니다.` : '건물 폭이 좁거나 기둥·계단이 많아 주차 칸을 그릴 자리가 없습니다.');
+        }
+      } }),
+      ' 1층 필로티를 주차장으로 쓰기 (주차선, 차량 표시)');
+  }
   const CORE_ROOMS = ['stairs', 'elevator'];
   function setPilotis(it, on) {
     if (!!it.pilotis === on) return;
@@ -2597,6 +2675,7 @@ button.danger { color: var(--danger); }
       box_.append(el('label', { class: 'check' },
         el('input', { type: 'checkbox', checked: !!it.pilotis, onchange: (e) => setPilotis(it, e.target.checked) }),
         ' 1층 필로티 (1층은 기둥만, 2층부터 교실)'));
+      if (it.pilotis) box_.append(parkingToggle(it));
       box_.append(el('div', { class: 'cols' },
         field('벽', el('input', { type: 'color', value: st.wall, onchange: (e) => setStyle({ wall: e.target.value }) })),
         field('포인트', el('input', { type: 'color', value: st.trim, onchange: (e) => setStyle({ trim: e.target.value }) })),
@@ -3617,6 +3696,7 @@ button.danger { color: var(--danger); }
       p.append(el('h3', {}, '1층 필로티'),
         el('p', {}, '1층은 기둥만 있는 열린 공간입니다. 교실은 2층부터 입력하세요.'),
         el('p', { class: 'plan-note' }, cores.length ? `2층 이상에 넣은 계단과 엘리베이터는 1층에도 함께 표시됩니다: ${cores.map((r) => r.name).join(', ')}` : '2층 이상에서 계단이나 엘리베이터를 넣으면 1층에도 함께 표시됩니다.'),
+        parkingToggle(it),
         el('p', { class: 'plan-note' }, '필로티는 2단계 건물 배치에서 건물을 선택한 뒤 끄고 켤 수 있습니다.'),
         el('button', { class: 'primary next', type: 'button', onclick: () => selectFloor(it.id, 1) }, '2층 교실 입력하기'));
       return;
