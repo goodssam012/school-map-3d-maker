@@ -218,9 +218,9 @@ button.danger { color: var(--danger); }
     fence: { g: 'prop', label: '울타리 (한 줄)', w: 12, d: .5, color: '#5e6a62' },
     enclosure: { g: 'prop', tab: 'enclosure', label: '담장·울타리', w: 60, d: 40, color: '#3d7a55' }
   };
-  const ROOM_TYPES = [['class', '교실'], ['science', '과학실'], ['music', '음악실'], ['art', '미술실'], ['tech', '기술실'], ['home', '가사실'], ['computer', '컴퓨터실'], ['library', '도서실'], ['cafeteria', '식당'], ['lab', '기타 특별실'], ['office', '사무실'], ['wc', '화장실'], ['elevator', '엘리베이터'], ['stairs', '계단'], ['etc', '기타']];
-  const ROOM_TINT = { class: '#e6d6b8', science: '#cfe3dc', music: '#e8d9e6', art: '#f0e0c4', tech: '#d9d4c8', home: '#f1e3d3', computer: '#d4dde8', library: '#e3dac8', cafeteria: '#efe2c6', lab: '#c9e0d8', office: '#d8dbe8', wc: '#cfe0ea', elevator: '#c5ccd0', stairs: '#ddd5c4', etc: '#e4e1da' };
-  const SPECIAL_TYPES = ['science', 'music', 'art', 'tech', 'home', 'computer', 'library', 'cafeteria'];
+  const ROOM_TYPES = [['class', '교실'], ['science', '과학실'], ['music', '음악실'], ['art', '미술실'], ['tech', '기술실'], ['home', '가사실'], ['computer', '컴퓨터실'], ['library', '도서실'], ['cafeteria', '식당'], ['sport', '체육실'], ['lab', '기타 특별실'], ['office', '사무실'], ['wc', '화장실'], ['elevator', '엘리베이터'], ['stairs', '계단'], ['etc', '기타']];
+  const ROOM_TINT = { class: '#e6d6b8', science: '#cfe3dc', music: '#e8d9e6', art: '#f0e0c4', tech: '#d9d4c8', home: '#f1e3d3', computer: '#d4dde8', library: '#e3dac8', cafeteria: '#efe2c6', sport: '#dcbc8c', lab: '#c9e0d8', office: '#d8dbe8', wc: '#cfe0ea', elevator: '#c5ccd0', stairs: '#ddd5c4', etc: '#e4e1da' };
+  const SPECIAL_TYPES = ['science', 'music', 'art', 'tech', 'home', 'computer', 'library', 'cafeteria', 'sport'];
   const BOARD_TYPES = ['class', 'science', 'music', 'art', 'tech', 'home', 'computer'];
   const DOOR_TYPES = [['center', '중앙현관'], ['glass', '유리문 현관'], ['door', '출입구'], ['exit', '비상구']];
   const DOOR_HALF = { center: 4.2, glass: 2.4, door: 1.5, exit: 1 };
@@ -347,6 +347,7 @@ button.danger { color: var(--danger); }
     if (/가사|가정|조리/.test(name)) return 'home';
     if (/컴퓨터|정보|전산/.test(name)) return 'computer';
     if (/도서|열람|자료실/.test(name)) return 'library';
+    if (/체육관|체육실|실내\s*체육|다목적\s*강당/.test(name)) return 'sport';
     if (/반$|교실/.test(name)) return 'class';
     if (/행정|교무|교장|보건|상담|방송|준비/.test(name)) return 'office';
     if (/실$|강당|체육관/.test(name)) return 'lab';
@@ -700,6 +701,12 @@ button.danger { color: var(--danger); }
         if (r.type === 'lab' && SPECIAL_TYPES.includes(typeFor(r.name))) r.type = typeFor(r.name);
       }));
       it.typesV2 = true;
+    }
+    if (!it.typesV3) {
+      Object.values(it.rooms).concat(it.pilotisStash ? [it.pilotisStash] : []).forEach((list) => list.forEach((r) => {
+        if (r.type === 'lab' && typeFor(r.name) === 'sport') r.type = 'sport';
+      }));
+      it.typesV3 = true;
     }
     for (let f = 0; f < it.floors; f++) {
       if (it.pilotis && f === 0) { it.rooms[0] = it.rooms[0] || []; continue; }
@@ -1714,6 +1721,56 @@ button.danger { color: var(--danger); }
     const [lx, lz] = fr.pt(W / 2, entry + run + landing / 2);
     flatLabel(parent, '계단', lx, H / 2 + .15, lz, Math.min(W * .6, landing * 2.4), '#59666b');
   }
+  function furnishSport(parent, x0, z0, rw, rd) {
+    const long = rw >= rd, L = long ? rw : rd, Wd = long ? rd : rw, cx = x0 + rw / 2, cz = z0 + rd / 2;
+    const P = (u, v) => (long ? [cx + u, cz + v] : [cx + v, cz + u]);
+    const put = (u, v, lu, h, lv, y, mat, noShadow) => { const [x, z] = P(u, v); return box(parent, long ? lu : lv, h, long ? lv : lu, mat, x, y, z, noShadow); };
+    const line = M('#ffffff'), Y = .13, hu = L / 2 - .8, hv = Wd / 2 - .8;
+    if (hu > 1 && hv > 1) {
+      put(0, -hv, hu * 2, .01, .08, Y, line, true);
+      put(0, hv, hu * 2, .01, .08, Y, line, true);
+      put(-hu, 0, .08, .01, hv * 2, Y, line, true);
+      put(hu, 0, .08, .01, hv * 2, Y, line, true);
+      put(0, 0, .08, .01, hv * 2, Y, line, true);
+      const r = Math.min(1.8, hv * .45), ring = new THREE.Mesh(new THREE.RingGeometry(r - .04, r + .04, 40), line);
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.set(cx, Y + .006, cz);
+      parent.add(ring);
+    }
+    const hoop = (s) => {
+      const lane = Math.min(4.6, hu * .45), half = Math.min(1.8, hv * .55);
+      if (hu > 2 && hv > 1) {
+        put(s * (hu - lane), 0, .08, .01, half * 2, Y, line, true);
+        [-half, half].forEach((v) => put(s * (hu - lane / 2), v, lane, .01, .08, Y, line, true));
+      }
+      put(s * (L / 2 - .35), 0, .5, .12, .12, 3, M('#59666b'), true);
+      put(s * (L / 2 - .6), 0, .06, 1.05, Math.min(1.8, Wd * .4), 3, M('#f4f4f0'));
+      put(s * (L / 2 - .6) - s * .04, 0, .02, .45, .6, 2.85, M('#d9442b'), true);
+      const [rx, rz] = P(s * (L / 2 - .9), 0), rim = new THREE.Mesh(new THREE.TorusGeometry(.23, .022, 6, 20), M('#e0662a'));
+      rim.rotation.x = Math.PI / 2;
+      rim.position.set(rx, 2.75, rz);
+      parent.add(rim);
+    };
+    if (L >= 12) [-1, 1].forEach(hoop);
+    else if (L >= 6) hoop(1);
+    if (L >= 8 && Wd >= 5) {
+      const span = Wd - .8;
+      [-span / 2, span / 2].forEach((v) => put(0, v, .1, 2.45, .1, 1.22, M('#59666b')));
+      put(0, 0, .02, .9, span, 1.98, NET_M, true);
+      put(0, 0, .03, .07, span, 2.4, line, true);
+    }
+    if (Wd >= 4 && L >= 6) {
+      put(-L / 2 + 1.2, Wd / 2 - .8, 1.8, .3, 1, .27, M('#3f6fb0'));
+      put(-L / 2 + 1.2, Wd / 2 - .8, 1.8, .3, 1, .58, M('#4d7fc2'));
+      const [bx, bz] = P(L / 2 - 1.3, Wd / 2 - .8);
+      box(parent, .9, .55, .6, M('#59666b'), bx, .4, bz);
+      [[-.22, -.12], [.05, .1], [.25, -.1], [-.05, .02]].forEach(([dx, dz], k) => {
+        const ball = new THREE.Mesh(new THREE.SphereGeometry(.13, 10, 8), M(k % 2 ? '#f2f2ee' : '#e0662a'));
+        ball.position.set(bx + dx, .8, bz + dz);
+        parent.add(ball);
+      });
+    }
+  }
   function furnishSpecial(parent, room, x0, z0, rw, rd, door, opts) {
     const type = room.type, hasBoard = BOARD_TYPES.includes(type), noBoard = !!(opts && opts.noBoard);
     const side = hasBoard ? boardOf(room, door) : (door.side === 'back' ? 'front' : 'back');
@@ -1807,6 +1864,8 @@ button.danger { color: var(--danger); }
           for (let v = a + .35; v <= a + segLen - .3; v += .65) [-.65, .65].forEach((du) => addI('chair', u + du, v, .4, .46, .4, .25, '#c06a45'));
         }
       }
+    } else if (type === 'sport') {
+      furnishSport(parent, x0, z0, rw, rd);
     }
     Object.values(groups).forEach((o) => {
       const m = new THREE.InstancedMesh(new THREE.BoxGeometry(T ? o.dv : o.du, o.h, T ? o.du : o.dv), M(o.color), o.list.length), mx = new THREE.Matrix4();
@@ -1896,7 +1955,7 @@ button.danger { color: var(--danger); }
   function doorTypeOf(room) {
     const t = room.door && room.door.type;
     if (t && t !== 'auto') return t;
-    return room.type === 'cafeteria' ? 'double' : room.type === 'library' ? 'glass' : room.type === 'wc' ? 'wc' : 'wood';
+    return room.type === 'cafeteria' || room.type === 'sport' ? 'double' : room.type === 'library' ? 'glass' : room.type === 'wc' ? 'wc' : 'wood';
   }
   const doorWidth = (room) => (doorTypeOf(room) === 'double' ? 2.4 : 1.3);
   function doorOfLogical(it, f, room) {
@@ -1953,6 +2012,8 @@ button.danger { color: var(--danger); }
   }
   const GLASS_M = new THREE.MeshLambertMaterial({ color: '#cfeaf2', transparent: true, opacity: .6 });
   GLASS_M.userData.keep = true;
+  const NET_M = new THREE.MeshLambertMaterial({ color: '#2b2f33', transparent: true, opacity: .45, depthWrite: false, side: THREE.DoubleSide });
+  NET_M.userData.keep = true;
   function buildRoomDoor(dg, room) {
     const t = doorTypeOf(room), frameM = M('#3b4a50'), handleM = M('#c8d0d3');
     if (t === 'glass') {
