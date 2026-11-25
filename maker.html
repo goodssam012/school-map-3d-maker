@@ -453,7 +453,7 @@ button.danger { color: var(--danger); }
   }
   const EMPTY_SET = new Set(), hallCache = new WeakMap();
   function hallSet(it, f) {
-    const list = it.outline && it.hall && it.hall[f];
+    const list = it.hall && it.hall[f];
     if (!list || !list.length) return EMPTY_SET;
     if (!hallCache.has(list)) hallCache.set(list, new Set(list));
     return hallCache.get(list);
@@ -508,7 +508,7 @@ button.danger { color: var(--danger); }
     const others = ((it.rooms && it.rooms[f]) || []).filter((o) => o.cell && !list.includes(o));
     const setRow = (rooms, r, rs) => {
       const free = [];
-      for (let c = 0; c < g.cols; c++) if (!others.some((o) => roomHits(o, { c, r, cs: 1, rs }))) free.push(c);
+      for (let c = 0; c < g.cols; c++) if (!others.some((o) => roomHits(o, { c, r, cs: 1, rs })) && !cellHitsHall(it, f, { c, r, cs: 1, rs })) free.push(c);
       rooms.forEach((room, i) => {
         const part = free.slice(Math.floor(i * free.length / rooms.length), Math.floor((i + 1) * free.length / rooms.length));
         let best = [], run = [];
@@ -528,6 +528,7 @@ button.danger { color: var(--danger); }
   }
   function setCorridorAxis(it, vert, kind) {
     if (vert) it.vert = true; else delete it.vert;
+    it.hall = null;
     it.corridor = {};
     for (let n = 0; n < it.floors; n++) it.corridor[n] = kind;
     Object.values(it.rooms || {}).concat(it.pilotisStash ? [it.pilotisStash] : []).forEach((list) => list.forEach((r) => { r.cell = undefined; r.more = null; }));
@@ -581,7 +582,7 @@ button.danger { color: var(--danger); }
   }
   function autoCell(it, f, exceptId) {
     const g = gridOf(it);
-    for (const nearHall of hallSet(it, f).size ? [true, false] : [false]) {
+    for (const nearHall of it.outline && hallSet(it, f).size ? [true, false] : [false]) {
       for (let cs = clamp(Math.round(9 / g.cw), 1, g.cols); cs >= 1; cs--) {
         for (let rs = it.outline ? Math.min(2, g.rows) : g.rows; rs >= 1; rs--) {
           for (let r = g.rows - rs; r >= 0; r--) {
@@ -613,7 +614,13 @@ button.danger { color: var(--danger); }
     Object.values(it.rooms || {}).forEach((list) => list.forEach((r) => { if (r.more && !(gridFor(LW(it), LD(it), !!it.outline).cols === oldGrid.cols && gridFor(LW(it), LD(it), !!it.outline).rows === oldGrid.rows)) r.more = null; }));
     const g = gridFor(LW(it), LD(it), !!it.outline);
     if (g.cols === oldGrid.cols && g.rows === oldGrid.rows) return;
-    it.hall = null;
+    if (!it.outline && it.hall && g.rows === oldGrid.rows) {
+      const hall = {};
+      Object.keys(it.hall).forEach((n) => {
+        hall[n] = [...new Set((it.hall[n] || []).map((k) => { const [c, r] = k.split(',').map(Number); return `${clamp(Math.round(c * g.cols / oldGrid.cols), 0, g.cols - 1)},${r}`; }))];
+      });
+      it.hall = hall;
+    } else it.hall = null;
     Object.values(it.rooms || {}).forEach((list) => {
       const placed = [];
       list.forEach((room) => {
@@ -1755,7 +1762,7 @@ button.danger { color: var(--danger); }
         if (a.r === cr) return back(a, a.c);
       }
     }
-    if (it.outline && hallSet(it, f).size) {
+    if (hallSet(it, f).size) {
       const h = (c, r) => hallSet(it, f).has(`${c},${r}`);
       for (const a of rects) {
         for (let c = a.c; c < a.c + a.cs; c++) if (h(c, a.r + a.rs)) return front(a, c);
@@ -1848,6 +1855,10 @@ button.danger { color: var(--danger); }
       box(g, w, .14, d, M('#cfc9bc'), 0, .03, 0);
       if (isVert(it)) box(g, CORR, .02, d, M('#bfc4bf'), corridorZ + CORR / 2, .11, 0, true);
       else box(g, w, .02, CORR, M('#bfc4bf'), 0, .11, corridorZ + CORR / 2, true);
+      hallSet(it, f).forEach((k) => {
+        const [c, r] = k.split(',').map(Number), q = cellRect(it, f, { c, r, cs: 1, rs: 1 });
+        box(g, q.w + .02, .02, q.d + .02, M('#bfc4bf'), q.cx, .11, q.cz, true);
+      });
       box(g, w, h, .2, wallM, 0, h / 2, z0);
       box(g, .2, h, d, wallM, -w / 2, h / 2, 0);
       box(g, .2, h, d, wallM, w / 2, h / 2, 0);
@@ -2744,7 +2755,7 @@ button.danger { color: var(--danger); }
       if (cr >= rs) rowsToTry.push(cr - rs);
       if (cr + rs <= g.rows) rowsToTry.push(cr);
     }
-    for (const nearHall of hallSet(it, f).size ? [true, false] : [false]) {
+    for (const nearHall of it.outline && hallSet(it, f).size ? [true, false] : [false]) {
       for (const r of rowsToTry) {
         for (let k = 0; k <= g.cols - cs; k++) {
           const cell = { c: fromLeft ? k : g.cols - cs - k, r, cs, rs };
@@ -2854,6 +2865,10 @@ button.danger { color: var(--danger); }
     });
     const entries = [];
     for (let n = 0; n < it.floors; n++) roomsOf(it, n).forEach((r) => { if (r.cell) entries.push({ n, r }); });
+    if (!it.outline) for (let n = 0; n < it.floors; n++) hallSet(it, n).forEach((k) => {
+      const [c, r] = k.split(',').map(Number);
+      entries.push({ n, r: { id: `hall:${n}:${k}`, hallKey: `hall:${n}:${c}`, cell: { c, r, cs: 1, rs: 1 } } });
+    });
     const boxes = new Map(entries.map(({ r }) => [r, roomBox(r)]));
     const linkCols = new Map();
     entries.forEach(({ r }) => {
@@ -2861,7 +2876,7 @@ button.danger { color: var(--danger); }
       if (!linkCols.has(r.link)) linkCols.set(r.link, new Set());
       linkCols.get(r.link).add(r.cell.c);
     });
-    const keyOf = (r) => (r.link && linkCols.has(r.link) && linkCols.get(r.link).size === 1 ? r.link : r.id);
+    const keyOf = (r) => r.hallKey || (r.link && linkCols.has(r.link) && linkCols.get(r.link).size === 1 ? r.link : r.id);
     const anchorKey = keyOf(room);
     const shared = entries.filter((e) => e.n === f && keyOf(e.r) === e.r.link && e.r.cell.c >= pivot).map((e) => e.r.cell.c);
     const threshold = shared.length ? Math.min(...shared) : Infinity;
@@ -2890,6 +2905,11 @@ button.danger { color: var(--danger); }
       });
     }
     entries.forEach(({ r }) => { const b = boxes.get(r); r.cell = shiftedCell(r, b, { c: pos.get(keyOf(r)), r: b.r }); });
+    const halls = entries.filter((e) => e.r.hallKey);
+    if (halls.length) for (let n = 0; n < it.floors; n++) {
+      if (!hallSet(it, n).size) continue;
+      setHall(it, n, [...new Set(halls.filter((e) => e.n === n).map((e) => `${e.r.cell.c},${e.r.cell.r}`))]);
+    }
   }
   function fitBuildingWidth(it, cols) {
     if (cols === gridFor(LW(it), LD(it), false).cols) return true;
@@ -2906,7 +2926,10 @@ button.danger { color: var(--danger); }
   }
   function neededCols(it) {
     let n = 2;
-    for (let f = 0; f < it.floors; f++) roomsOf(it, f).forEach((r) => { if (r.cell) { const b = roomBox(r); n = Math.max(n, b.c + b.cs); } });
+    for (let f = 0; f < it.floors; f++) {
+      roomsOf(it, f).forEach((r) => { if (r.cell) { const b = roomBox(r); n = Math.max(n, b.c + b.cs); } });
+      if (!it.outline) hallSet(it, f).forEach((k) => { n = Math.max(n, Number(k.split(',')[0]) + 1); });
+    }
     return n;
   }
   function roomsValid(it) {
@@ -2919,10 +2942,11 @@ button.danger { color: var(--danger); }
   function setRoomSize(it, f, room, cs) {
     if (!room.cell || room.cell.cs === cs) return;
     if (room.more) { toast('칸을 합친 교실은 크기 목록 대신 격자에서 칸을 더하거나 풀어 주세요.'); renderPanel(); return; }
-    const saved = JSON.stringify(it.rooms), oldW = LW(it), grew = cs > room.cell.cs;
-    const fail = (msg) => { it.rooms = JSON.parse(saved); toast(msg); renderPanel(); };
+    const saved = JSON.stringify(it.rooms), savedHall = it.hall, oldW = LW(it), grew = cs > room.cell.cs;
+    const fail = (msg) => { it.rooms = JSON.parse(saved); it.hall = savedHall; toast(msg); renderPanel(); };
     reflowRooms(it, f, room, cs);
     if (!roomsValid(it)) { fail('다른 시설과 겹쳐 크기를 바꿀 수 없습니다.'); return; }
+    if (!it.outline && Object.keys(it.rooms).some((n) => it.rooms[n].some((r) => roomRects(r).some((a) => cellHitsHall(it, Number(n), a))))) { fail('합친 복도 칸과 겹쳐 크기를 바꿀 수 없습니다. 교실을 옮기거나 복도 칸을 푼 뒤 다시 해 주세요.'); return; }
     if (it.outline) {
       const g = gridOf(it);
       const ok = Object.keys(it.rooms).every((n) => it.rooms[n].every((r) => roomRects(r).every((a) => insideGrid(a, g) && cellInMask(a, g) && !cellHitsHall(it, Number(n), a))));
@@ -3083,17 +3107,19 @@ button.danger { color: var(--danger); }
     refreshRooms();
   }
   function hallEditor(it, f) {
-    const has = hallSet(it, f).size > 0;
+    const has = hallSet(it, f).size > 0, drawn = !!it.outline;
     const sides = [['front', '아래쪽'], ['back', '위쪽'], ['left', '왼쪽'], ['right', '오른쪽']];
     return el('div', {},
-      el('h3', {}, `${f + 1}층 복도`),
-      el('p', { class: 'plan-note' }, '직접 그린 건물은 복도 칸을 정합니다. 가장자리를 고르면 자동으로 만들어지고, 칠하기로 칸을 더하거나 뺄 수 있습니다.'),
-      el('div', { class: 'chips', role: 'group', 'aria-label': '복도 자동 만들기' }, sides.map(([side, label]) => el('button', {
+      el('h3', {}, drawn ? `${f + 1}층 복도` : `${f + 1}층 복도 칸 합치기`),
+      el('p', { class: 'plan-note' }, drawn ? '직접 그린 건물은 복도 칸을 정합니다. 가장자리를 고르면 자동으로 만들어지고, 칠하기로 칸을 더하거나 뺄 수 있습니다.'
+        : hallPaint ? '격자의 빈칸을 누르거나 끌면 복도에 합쳐지고, 합친 칸을 다시 누르거나 끌면 풀립니다. ㄱ자, ㄷ자, ㅁ자 복도나 넓은 홀을 만들 수 있습니다.'
+          : '빈칸을 복도에 합쳐 ㄱ자, ㄷ자 복도나 현관 홀을 만들 수 있습니다. 복도와 맞닿은 교실 문은 그쪽으로 납니다.'),
+      drawn ? el('div', { class: 'chips', role: 'group', 'aria-label': '복도 자동 만들기' }, sides.map(([side, label]) => el('button', {
         class: 'chip', type: 'button', onclick: () => autoHall(it, f, side)
-      }, `${label} 가장자리`))),
-      el('div', { class: 'actions', style: 'margin-top:6px' },
-        el('button', { type: 'button', class: hallPaint ? 'primary' : '', 'aria-pressed': hallPaint, onclick: () => { hallPaint = !hallPaint; renderPanel(); } }, hallPaint ? '칠하기 끝내기' : '복도 칸 칠하기'),
-        el('button', { type: 'button', disabled: !has, onclick: () => { setHall(it, f, []); refreshRooms(); } }, '복도 지우기'),
+      }, `${label} 가장자리`))) : null,
+      el('div', { class: 'actions', style: drawn ? 'margin-top:6px' : 'margin-top:0' },
+        el('button', { type: 'button', class: hallPaint ? 'primary' : '', 'aria-pressed': hallPaint, onclick: () => { hallPaint = !hallPaint; mergeMode = false; renderPanel(); } }, hallPaint ? (drawn ? '칠하기 끝내기' : '합치기 끝내기') : (drawn ? '복도 칸 칠하기' : '복도 칸 합치기')),
+        el('button', { type: 'button', disabled: !has, onclick: () => { setHall(it, f, []); refreshRooms(); } }, drawn ? '복도 지우기' : '합친 칸 모두 풀기'),
         it.floors > 1 ? el('button', { type: 'button', disabled: !has, onclick: () => {
           const list = [...hallSet(it, f)], total = { trimmed: 0, lost: 0 };
           for (let n = 0; n < it.floors; n++) {
@@ -3105,7 +3131,7 @@ button.danger { color: var(--danger); }
           refreshRooms();
           toast(`모든 층에 같은 복도를 적용했습니다.${hallReport(total)}`);
         } }, '모든 층에 적용') : null),
-      hallPaint ? el('p', { class: 'plan-note' }, '격자의 빈칸을 누르거나 끌면 복도가 되고, 복도 칸을 다시 누르거나 끌면 지워집니다.') : null);
+      hallPaint && drawn ? el('p', { class: 'plan-note' }, '격자의 빈칸을 누르거나 끌면 복도가 되고, 복도 칸을 다시 누르거나 끌면 지워집니다.') : null);
   }
   function refreshRooms() {
     buildInterior();
@@ -3115,7 +3141,7 @@ button.danger { color: var(--danger); }
   }
   function planEl(it, f) {
     const g = gridOf(it), rooms = roomsOf(it, f);
-    const plan = el('div', { class: 'plan' + (hallPaint && it.outline ? ' painting' : '') + (mergeMode ? ' merging' : ''), role: 'group', 'aria-label': `${f + 1}층 평면 격자` });
+    const plan = el('div', { class: 'plan' + (hallPaint ? ' painting' : '') + (mergeMode ? ' merging' : ''), role: 'group', 'aria-label': `${f + 1}층 평면 격자` });
     plan.style.setProperty('--c', g.cols);
     plan.style.setProperty('--r', g.rows);
     const cr = corridorRow(it, f), corridorH = it.outline ? 0 : CORR, vert = isVert(it);
@@ -3221,7 +3247,7 @@ button.danger { color: var(--danger); }
         e.preventDefault();
         return;
       }
-      if (hallPaint && it.outline) {
+      if (hallPaint) {
         gesture = { mode: 'paint', c, r, rect: { c, r, cs: 1, rs: 1 }, moved: false, value: !hallSet(it, f).has(`${c},${r}`) };
         plan.setPointerCapture(e.pointerId);
         e.preventDefault();
@@ -3326,7 +3352,7 @@ button.danger { color: var(--danger); }
     };
     plan.addEventListener('pointerup', finish);
     plan.addEventListener('pointercancel', finish);
-    return el('div', {}, plan, it.outline ? el('p', { class: 'plan-note' }, hallSet(it, f).size ? '빗금 칸은 건물 밖, 회청색 칸은 복도입니다. 교실 문은 복도 쪽으로 납니다.' : '빗금 칸은 건물 밖입니다. 위에서 복도 칸을 정하면 교실 문이 복도 쪽으로 납니다.') : null);
+    return el('div', {}, plan, it.outline ? el('p', { class: 'plan-note' }, hallSet(it, f).size ? '빗금 칸은 건물 밖, 회청색 칸은 복도입니다. 교실 문은 복도 쪽으로 납니다.' : '빗금 칸은 건물 밖입니다. 위에서 복도 칸을 정하면 교실 문이 복도 쪽으로 납니다.') : hallSet(it, f).size ? el('p', { class: 'plan-note' }, '회청색 칸은 복도에 합친 칸입니다.') : null);
   }
   function panelRooms(p) {
     p.append(el('h2', {}, '층별 교실 정보'));
@@ -3394,7 +3420,7 @@ button.danger { color: var(--danger); }
         } }, '이 복도 위치를 모든 층에 적용'));
       }
     }
-    if (it.outline) p.append(hallEditor(it, f));
+    p.append(hallEditor(it, f));
     p.append(el('h3', {}, `${f + 1}층 평면`), planEl(it, f));
     p.append(el('p', { class: 'plan-note' }, '빈칸을 누르거나 끌면 교실이 생기고, 교실을 끌면 옮겨집니다. 다른 교실 위에 놓으면 그 자리에 끼워 넣고 나머지가 밀립니다. 빨간 모서리를 끌면 크기가 바뀝니다. 초록 선은 칠판 위치입니다.'));
     p.append(boardEditor(it, f));
