@@ -116,7 +116,11 @@ button.danger { color: var(--danger); }
 .plan-hallcell { position: absolute; pointer-events: none; background: #c9d3cf; box-shadow: inset 0 0 0 1px #aab6b1; }
 .plan.painting, .plan.painting .plan-room { cursor: crosshair; }
 .plan-preview.hall { background: rgb(120 140 132 / .45); border: 2px solid #5d6f68; }
-.plan-door { position: absolute; z-index: 2; pointer-events: none; background: #7c3f1d; transform: translate(-50%, -50%); border-radius: 1px; }
+.plan-door { position: absolute; z-index: 4; background: #7c3f1d; transform: translate(-50%, -50%); border-radius: 1px; cursor: grab; touch-action: none; }
+.plan-door::after { content: ''; position: absolute; inset: -7px; }
+.plan-door:hover, .plan-door.dragging { background: #d92d20; box-shadow: 0 0 0 2px rgb(217 45 32 / .3); }
+.plan-door.dragging { cursor: grabbing; }
+.plan.merging .plan-door, .plan.painting .plan-door { pointer-events: none; }
 .plan-door.h { width: 14px; height: 5px; }
 .plan-door.v { width: 5px; height: 14px; }
 .plan-room.plan-extra { cursor: move; }
@@ -3359,6 +3363,23 @@ button.danger { color: var(--danger); }
       plan.append(hall);
     }
     const place = (n, a) => setBox(n, cellRect(it, f, a));
+    const placeDoorMark = (mark, room) => {
+      const dp = doorOf(it, f, room);
+      mark.classList.toggle('h', dp.side === 'front' || dp.side === 'back');
+      mark.classList.toggle('v', !(dp.side === 'front' || dp.side === 'back'));
+      mark.style.left = `${(dp.x + it.w / 2) / it.w * 100}%`;
+      mark.style.top = `${(dp.z + it.d / 2) / it.d * 100}%`;
+    };
+    const doorAt = (e, room) => {
+      const b = plan.getBoundingClientRect(), R = cellRect(it, f, room.cell);
+      const x = (e.clientX - b.left) / b.width * it.w - it.w / 2, z = (e.clientY - b.top) / b.height * it.d - it.d / 2;
+      const cx = clamp(x, R.x0, R.x1), cz = clamp(z, R.z0, R.z1);
+      const sides = [['front', Math.abs(z - R.z1) + Math.abs(x - cx)], ['back', Math.abs(z - R.z0) + Math.abs(x - cx)],
+        ['left', Math.abs(x - R.x0) + Math.abs(z - cz)], ['right', Math.abs(x - R.x1) + Math.abs(z - cz)]];
+      const side = sides.sort((p, q) => p[1] - q[1])[0][0];
+      const t = side === 'front' || side === 'back' ? (cx - R.x0) / R.w : (cz - R.z0) / R.d;
+      return { side, t: Math.round(clamp(t, 0, 1) * 20) / 20 };
+    };
     if (g.mask) {
       g.mask.forEach((row, r) => row.forEach((ok, c) => {
         if (ok) return;
@@ -3414,9 +3435,9 @@ button.danger { color: var(--danger); }
         plan.append(seam);
       });
       if (room.type !== 'elevator' && room.type !== 'stairs') {
-        const dp = doorOf(it, f, room), mark = el('div', { class: 'plan-door ' + (dp.side === 'front' || dp.side === 'back' ? 'h' : 'v') });
-        mark.style.left = `${(dp.x + it.w / 2) / it.w * 100}%`;
-        mark.style.top = `${(dp.z + it.d / 2) / it.d * 100}%`;
+        const mark = el('div', { class: 'plan-door', title: `${room.name} 출입문 (끌어서 옮기기)` });
+        mark.dataset.doorRoom = room.id;
+        placeDoorMark(mark, room);
         plan.append(mark);
       }
     });
@@ -3436,6 +3457,15 @@ button.danger { color: var(--danger); }
     plan.addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;
       const [c, r] = cellAt(e);
+      const doorMark = !mergeMode && !hallPaint && e.target.closest('.plan-door');
+      if (doorMark) {
+        const room = rooms.find((x) => x.id === doorMark.dataset.doorRoom);
+        if (focus.room !== room.id) markRoom(it, f, room.id);
+        gesture = { mode: 'door', room, mark: doorMark, saved: room.door ? Object.assign({}, room.door) : null, moved: false };
+        plan.setPointerCapture(e.pointerId);
+        e.preventDefault();
+        return;
+      }
       const block = e.target.closest('.plan-room');
       const selected = rooms.find((x) => x.id === focus.room && x.cell);
       if (mergeMode && selected && !(block && block.dataset.planRoom !== selected.id)) {
@@ -3464,6 +3494,14 @@ button.danger { color: var(--danger); }
     });
     plan.addEventListener('pointermove', (e) => {
       if (!gesture) return;
+      if (gesture.mode === 'door') {
+        const a = gesture, pos = doorAt(e, a.room);
+        a.moved = true;
+        a.room.door = Object.assign({ type: 'auto' }, a.room.door, pos);
+        a.mark.classList.add('dragging');
+        placeDoorMark(a.mark, a.room);
+        return;
+      }
       const [c, r] = cellAt(e), a = gesture;
       let rect;
       if (a.mode === 'move') {
@@ -3497,6 +3535,12 @@ button.danger { color: var(--danger); }
       const a = gesture;
       gesture = null;
       preview.hidden = true;
+      if (a.mode === 'door') {
+        a.mark.classList.remove('dragging');
+        if (e.type === 'pointercancel') { a.room.door = a.saved || undefined; placeDoorMark(a.mark, a.room); return; }
+        if (a.moved) refreshRooms();
+        return;
+      }
       if (e.type === 'pointercancel') return;
       if (a.mode === 'paint') { paintHall(it, f, a.rect, a.value); return; }
       if (a.mode === 'merge') {
