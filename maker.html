@@ -120,6 +120,7 @@ button.danger { color: var(--danger); }
 .plan-door.h { width: 14px; height: 5px; }
 .plan-door.v { width: 5px; height: 14px; }
 .plan-room.plan-extra { cursor: move; }
+.plan-seam { position: absolute; z-index: 3; pointer-events: none; }
 .plan.merging, .plan.merging .plan-room { cursor: copy; }
 .plan-preview.merge { background: rgb(47 111 179 / .3); border: 2px solid #2f6fb3; }
 .plan-preview.insert { background: rgb(47 111 179 / .3); border: 2px dashed #2f6fb3; }
@@ -210,7 +211,8 @@ button.danger { color: var(--danger); }
     gate: { g: 'prop', tab: 'gate', label: '정문', w: 16, d: 2, color: '#7e6a5b' },
     backgate: { g: 'prop', tab: 'gate', label: '후문', w: 10, d: 2, color: '#8d8173' },
     stone: { g: 'prop', label: '기념비', w: 4, d: 2, color: '#8f8f88' },
-    fence: { g: 'prop', label: '울타리', w: 12, d: .5, color: '#5e6a62' }
+    fence: { g: 'prop', label: '울타리 (한 줄)', w: 12, d: .5, color: '#5e6a62' },
+    enclosure: { g: 'prop', tab: 'enclosure', label: '담장·울타리', w: 60, d: 40, color: '#3d7a55' }
   };
   const ROOM_TYPES = [['class', '교실'], ['science', '과학실'], ['music', '음악실'], ['art', '미술실'], ['tech', '기술실'], ['home', '가사실'], ['computer', '컴퓨터실'], ['library', '도서실'], ['cafeteria', '식당'], ['lab', '기타 특별실'], ['office', '사무실'], ['wc', '화장실'], ['elevator', '엘리베이터'], ['stairs', '계단'], ['etc', '기타']];
   const ROOM_TINT = { class: '#e6d6b8', science: '#cfe3dc', music: '#e8d9e6', art: '#f0e0c4', tech: '#d9d4c8', home: '#f1e3d3', computer: '#d4dde8', library: '#e3dac8', cafeteria: '#efe2c6', lab: '#c9e0d8', office: '#d8dbe8', wc: '#cfe0ea', elevator: '#c5ccd0', stairs: '#ddd5c4', etc: '#e4e1da' };
@@ -823,6 +825,7 @@ button.danger { color: var(--danger); }
     project.items.forEach((i) => { if (old.get(i.id) !== plain(i)) i.mtime = now; });
   }
   function commit() {
+    syncEnclosures();
     if (history.length) stampChanges(history[history.length - 1]);
     const s = snapshot();
     if (s !== history[history.length - 1]) {
@@ -1295,6 +1298,104 @@ button.danger { color: var(--danger); }
     }
   }
 
+  const FENCE_STYLES = [['mesh', '철망 울타리', 2], ['rail', '철제 울타리', 1.8], ['wood', '나무 울타리', 1.2], ['lowwall', '낮은 담장 + 철제 울타리', 1.8], ['brick', '벽돌 담장', 2], ['stone', '돌담', 1.6], ['hedge', '생울타리 (나무)', 1.2]];
+  const fenceDefaultH = (style) => (FENCE_STYLES.find((x) => x[0] === style) || FENCE_STYLES[1])[2];
+  const fenceStyleOf = (it) => it.fenceStyle || (it.kind === 'fence' ? 'rail' : 'mesh');
+  const WIRE_M = new THREE.MeshLambertMaterial({ color: '#3d7a55', transparent: true, opacity: .35, depthWrite: false });
+  WIRE_M.userData.keep = true;
+  function instRow(g, xs, w, h, d, y, mat) {
+    if (!xs.length) return;
+    const m = new THREE.InstancedMesh(new THREE.BoxGeometry(w, h, d), mat, xs.length), mx = new THREE.Matrix4();
+    xs.forEach((x, k) => m.setMatrixAt(k, mx.makeTranslation(x, y, 0)));
+    m.instanceMatrix.needsUpdate = true;
+    m.castShadow = true;
+    g.add(m);
+  }
+  function spaced(len, step) {
+    const n = Math.max(1, Math.round(len / step)), xs = [];
+    for (let i = 0; i <= n; i++) xs.push(-len / 2 + len * i / n);
+    return xs;
+  }
+  function fenceRun(g, len, style, h) {
+    if (len < .3) return;
+    h = h || fenceDefaultH(style);
+    if (style === 'mesh') {
+      instRow(g, spaced(len, 2.5), .09, h, .09, h / 2, M('#2f5e43'));
+      box(g, len, .06, .06, M('#2f5e43'), 0, h - .03, 0, true);
+      box(g, len, h - .1, .03, WIRE_M, 0, h / 2, 0, true);
+    } else if (style === 'wood') {
+      instRow(g, spaced(len, .32), .12, h, .04, h / 2, M('#b98b5c'));
+      [.3, .75].forEach((f) => box(g, len, .08, .05, M('#94704a'), 0, h * f, -.05, true));
+    } else if (style === 'lowwall') {
+      const b = Math.min(.7, h * .4), top = h - b;
+      box(g, len, b, .32, M('#cfc7b6'), 0, b / 2, 0);
+      box(g, len, .06, .4, M('#b5ad9c'), 0, b + .03, 0, true);
+      instRow(g, spaced(len, 2.4), .08, top, .08, b + top / 2, M('#45535a'));
+      instRow(g, spaced(len, .2), .025, top - .08, .025, b + top / 2, M('#45535a'));
+      box(g, len, .06, .05, M('#45535a'), 0, h - .03, 0, true);
+    } else if (style === 'brick') {
+      box(g, len, h, .3, M('#a3583f'), 0, h / 2, 0);
+      box(g, len, .1, .42, M('#ddd5c6'), 0, h + .05, 0, true);
+      instRow(g, spaced(len, 4), .5, h + .08, .44, (h + .08) / 2, M('#8f4a35'));
+    } else if (style === 'stone') {
+      box(g, len, h, .5, M('#9b988e'), 0, h / 2, 0);
+      box(g, len, .12, .6, M('#7f7c73'), 0, h + .06, 0, true);
+      instRow(g, spaced(len, 1.2), .9, h * .4, .54, h * .28, M('#8c897f'));
+    } else if (style === 'hedge') {
+      box(g, len, h, .8, M('#4b8740'), 0, h / 2, 0);
+      box(g, Math.max(.1, len - .1), .2, .7, M('#5b9a4e'), 0, h + .05, 0, true);
+    } else {
+      const k = h / 1.8;
+      box(g, len, .12, .08, M('#5e6a62'), 0, 1.5 * k, 0);
+      box(g, len, .12, .08, M('#5e6a62'), 0, .7 * k, 0);
+      instRow(g, spaced(len, 2), .12, h, .12, h / 2, M('#5e6a62'));
+    }
+  }
+  function enclosureLayout(it) {
+    const hw = it.w / 2, hd = it.d / 2, Y = new THREE.Vector3(0, 1, 0);
+    const edges = [
+      { axis: 'x', fixed: hd, len: it.w }, { axis: 'x', fixed: -hd, len: it.w },
+      { axis: 'z', fixed: -hw, len: it.d }, { axis: 'z', fixed: hw, len: it.d }
+    ].map((e) => Object.assign(e, { cuts: [] }));
+    const gates = [];
+    project.items.filter(isGate).forEach((gt) => {
+      const v = new THREE.Vector3(gt.x - it.x, 0, gt.z - it.z).applyAxisAngle(Y, (it.rot || 0) * Math.PI / 2);
+      const rel = (((gt.rot || 0) - (it.rot || 0)) % 2 + 2) % 2;
+      let best = null;
+      edges.forEach((e) => {
+        const normal = e.axis === 'x' ? v.z : v.x, along = e.axis === 'x' ? v.x : v.z;
+        const span = (e.axis === 'x' ? (rel === 0 ? gt.w : gt.d) : (rel === 1 ? gt.w : gt.d)) / 2 + .2;
+        const dist = Math.abs(normal - e.fixed);
+        if (dist <= 5 && along + span > -e.len / 2 && along - span < e.len / 2 && (!best || dist < best.dist)) best = { e, dist, cut: [along - span, along + span] };
+      });
+      if (best) { best.e.cuts.push(best.cut); gates.push(gt.name || CAT[gt.kind].label); }
+    });
+    edges.forEach((e) => {
+      const cuts = e.cuts.slice().sort((a, b) => a[0] - b[0]), runs = [];
+      let from = -e.len / 2;
+      cuts.forEach(([a, b]) => { if (a > from) runs.push([from, Math.min(a, e.len / 2)]); from = Math.max(from, b); });
+      if (from < e.len / 2) runs.push([from, e.len / 2]);
+      e.runs = runs.filter(([a, b]) => b - a >= .3);
+    });
+    return { edges, gates };
+  }
+  function buildEnclosure(it, g) {
+    const style = fenceStyleOf(it), h = it.fenceH || fenceDefaultH(style);
+    enclosureLayout(it).edges.forEach((e) => e.runs.forEach(([a, b]) => {
+      const sub = new THREE.Group(), mid = (a + b) / 2;
+      if (e.axis === 'x') sub.position.set(mid, 0, e.fixed);
+      else { sub.position.set(e.fixed, 0, mid); sub.rotation.y = Math.PI / 2; }
+      fenceRun(sub, b - a, style, h);
+      g.add(sub);
+    }));
+  }
+  let gateSig = null;
+  function syncEnclosures() {
+    const sig = project.items.filter(isGate).map((gt) => [gt.x, gt.z, gt.rot, gt.w, gt.d].join()).join('|');
+    if (sig === gateSig) return;
+    gateSig = sig;
+    project.items.filter((i) => i.kind === 'enclosure' && built.has(i.id)).forEach(rebuildItem);
+  }
   function buildProp(it, g) {
     const c = CAT[it.kind].color;
     switch (it.kind) {
@@ -1363,9 +1464,10 @@ button.danger { color: var(--danger); }
         box(g, 2.5, 2.6, .55, M(c), 0, 1.6, 0);
         break;
       case 'fence':
-        box(g, it.w, .12, .08, M(c), 0, 1.5, 0);
-        box(g, it.w, .12, .08, M(c), 0, .7, 0);
-        for (let x = -it.w / 2; x <= it.w / 2 + .01; x += 2) box(g, .12, 1.8, .12, M(c), x, .9, 0);
+        fenceRun(g, it.w, fenceStyleOf(it), it.fenceH);
+        break;
+      case 'enclosure':
+        buildEnclosure(it, g);
         break;
     }
   }
@@ -1822,6 +1924,65 @@ button.danger { color: var(--danger); }
       }
     });
   }
+  function sharedEdge(A, B) {
+    const e = .05, zs = [Math.max(A.z0, B.z0), Math.min(A.z1, B.z1)], xs = [Math.max(A.x0, B.x0), Math.min(A.x1, B.x1)];
+    if (Math.abs(A.x1 - B.x0) < e) return { x0: A.x1, x1: A.x1, z0: zs[0], z1: zs[1] };
+    if (Math.abs(B.x1 - A.x0) < e) return { x0: A.x0, x1: A.x0, z0: zs[0], z1: zs[1] };
+    if (Math.abs(A.z1 - B.z0) < e) return { x0: xs[0], x1: xs[1], z0: A.z1, z1: A.z1 };
+    if (Math.abs(B.z1 - A.z0) < e) return { x0: xs[0], x1: xs[1], z0: A.z0, z1: A.z0 };
+    return null;
+  }
+  function mergedSeams(it, f, room) {
+    const rects = roomRects(room), segs = [];
+    if (rects.length < 2) return segs;
+    const idx = (c, r) => rects.findIndex((a) => c >= a.c && c < a.c + a.cs && r >= a.r && r < a.r + a.rs);
+    rects.forEach((a, i) => {
+      for (let r = a.r; r < a.r + a.rs; r++) for (let c = a.c; c < a.c + a.cs; c++) {
+        [[1, 0], [0, 1]].forEach(([dc, dr]) => {
+          const j = idx(c + dc, r + dr);
+          if (j < 0 || j === i) return;
+          const seg = sharedEdge(cellRect(it, f, { c, r, cs: 1, rs: 1 }), cellRect(it, f, { c: c + dc, r: r + dr, cs: 1, rs: 1 }));
+          if (seg) segs.push(seg);
+        });
+      }
+    });
+    return segs;
+  }
+  function clearSeams(group, segs) {
+    const near = (x, z) => segs.some((q) => Math.hypot(x - clamp(x, q.x0, q.x1), z - clamp(z, q.z0, q.z1)) < .8);
+    const tall = (y, geo) => y + ((geo.parameters && geo.parameters.height) || 0) / 2 >= 1;
+    group.children.slice().forEach((m) => {
+      if (m.isInstancedMesh) {
+        const mx = new THREE.Matrix4(), keep = [];
+        for (let k = 0; k < m.count; k++) {
+          m.getMatrixAt(k, mx);
+          const e = mx.elements;
+          if (!(tall(e[13], m.geometry) && near(e[12], e[14]))) keep.push(mx.clone());
+        }
+        if (keep.length === m.count) return;
+        if (!keep.length) { group.remove(m); m.geometry.dispose(); return; }
+        keep.forEach((k, i) => m.setMatrixAt(i, k));
+        m.count = keep.length;
+        m.instanceMatrix.needsUpdate = true;
+      } else if (m.isMesh && tall(m.position.y, m.geometry) && near(m.position.x, m.position.z)) {
+        group.remove(m);
+        m.geometry.dispose();
+      }
+    });
+  }
+  function mergedFloor(g, it, f, room, mat) {
+    const rects = roomRects(room);
+    const own = (c, r) => rects.some((a) => c >= a.c && c < a.c + a.cs && r >= a.r && r < a.r + a.rs);
+    rects.forEach((a) => {
+      for (let r = a.r; r < a.r + a.rs; r++) for (let c = a.c; c < a.c + a.cs; c++) {
+        const q = logicalRect(it, f, { c, r, cs: 1, rs: 1 });
+        const x0 = q.x0 + (own(c - 1, r) ? 0 : .08), x1 = q.x1 - (own(c + 1, r) ? 0 : .08);
+        const z0 = q.z0 + (own(c, r - 1) ? 0 : .08), z1 = q.z1 - (own(c, r + 1) ? 0 : .08);
+        const p = toPhysRect(it, { x0, z0, x1, z1, w: x1 - x0, d: z1 - z0, cx: (x0 + x1) / 2, cz: (z0 + z1) / 2 });
+        box(g, p.w, .02, p.d, mat, p.cx, .115, p.cz, true);
+      }
+    });
+  }
   function buildInterior() {
     plates.clear();
     if (interior) {
@@ -1868,7 +2029,8 @@ button.danger { color: var(--danger); }
     rooms.forEach((room, i) => {
       if (!room.cell) return;
       const r = roomRect(it, room, f), door = doorOf(it, f, room), rects = roomRects(room);
-      rects.forEach((a) => { const q = cellRect(it, f, a); box(g, q.w - .16, .02, q.d - .16, M(ROOM_TINT[room.type] || ROOM_TINT.etc), q.cx, .115, q.cz, true); });
+      if (rects.length > 1) mergedFloor(g, it, f, room, M(ROOM_TINT[room.type] || ROOM_TINT.etc));
+      else rects.forEach((a) => { const q = cellRect(it, f, a); box(g, q.w - .16, .02, q.d - .16, M(ROOM_TINT[room.type] || ROOM_TINT.etc), q.cx, .115, q.cz, true); });
       const openSide = room.type === 'stairs' ? door.side : null, headH = Math.max(.3, h - 2.35);
       const wall = (side, sx, sz, x, z) => {
         if (side === openSide) box(g, sx, headH, sz, wallM, x, h - headH / 2, z);
@@ -1881,8 +2043,10 @@ button.danger { color: var(--danger); }
         wall('left', .16, r.d, r.x0, r.cz);
         wall('right', .16, r.d, r.x1, r.cz);
       }
-      furnish(g, room, r.x0, r.z0, r.w, r.d, door, f === it.floors - 1);
-      rects.slice(1).forEach((a) => { const q = cellRect(it, f, a); furnish(g, room, q.x0, q.z0, q.w, q.d, door, f === it.floors - 1, { noBoard: true }); });
+      const fg = rects.length > 1 ? new THREE.Group() : g;
+      furnish(fg, room, r.x0, r.z0, r.w, r.d, door, f === it.floors - 1);
+      rects.slice(1).forEach((a) => { const q = cellRect(it, f, a); furnish(fg, room, q.x0, q.z0, q.w, q.d, door, f === it.floors - 1, { noBoard: true }); });
+      if (fg !== g) { clearSeams(fg, mergedSeams(it, f, room)); g.add(fg); }
       const dg = new THREE.Group();
       dg.position.set(door.x, 0, door.z);
       dg.rotation.y = door.ry;
@@ -1904,7 +2068,7 @@ button.danger { color: var(--danger); }
   }
 
   /* ---------- 위치 점 ---------- */
-  let plateRoom = null, hallPaint = false, mergeMode = false;
+  let plateRoom = null, hallPaint = false, mergeMode = false, fenceMode = null, fenceChoice = 'mesh';
   const markerMat = (color, opacity) => new THREE.MeshBasicMaterial({ color, transparent: true, opacity, depthTest: false, depthWrite: false });
   const marker = new THREE.Group();
   const markerDot = new THREE.Mesh(new THREE.SphereGeometry(1, 20, 14), markerMat('#e5261a', 1));
@@ -2077,6 +2241,7 @@ button.danger { color: var(--danger); }
     const h = $('hint');
     let t = '';
     if (drawMode) t = '';
+    else if (fenceMode) t = '담장·울타리를 두를 영역을 대각선으로 끌어 주세요. Esc 취소';
     else if (placing) t = '지도를 눌러 배치하세요. R 회전, Esc 취소';
     else if (step === 'place') t = '건물을 끌어 옮기고, 눌러서 선택합니다. R 회전, Delete 삭제';
     h.textContent = t;
@@ -2225,7 +2390,7 @@ button.danger { color: var(--danger); }
 
   function panelPlace(p) {
     p.append(el('h2', {}, '건물 배치'), el('p', {}, '항목을 고른 뒤 지도를 눌러 놓으세요.'));
-    const tabs = [['building', '건물'], ['site', '시설'], ['gate', '출입구'], ['prop', '소품']];
+    const tabs = [['building', '건물'], ['site', '시설'], ['gate', '출입구'], ['prop', '소품·담장']];
     p.append(el('div', { class: 'chips', role: 'group', 'aria-label': '에셋 분류' }, tabs.map(([id, label]) => el('button', {
       class: 'chip', type: 'button', 'aria-pressed': placeTab === id, onclick: () => { placeTab = id; renderPanel(); }
     }, label))));
@@ -2234,6 +2399,14 @@ button.danger { color: var(--danger); }
       i.style.background = c.color;
       return el('button', { type: 'button', 'aria-pressed': !!(placing && placing.kind === k), onclick: () => (placing && placing.kind === k ? cancelPlace() : startPlace(k)) }, i, c.label);
     })));
+    if (placeTab === 'prop') {
+      p.append(el('h3', {}, '담장·울타리 두르기'),
+        el('p', { class: 'plan-note' }, '모양을 고른 뒤 지도에서 영역을 대각선으로 끌면 네 면에 한 번에 설치됩니다. 울타리 선 위에 있는 정문과 후문 자리는 자동으로 비워집니다.'),
+        field('모양', selectEl(fenceChoice, FENCE_STYLES.map(([v, t]) => [v, t]), (v) => { fenceChoice = v; }, '새 담장·울타리 모양')),
+        el('div', { class: 'actions', style: 'margin-top:6px' },
+          el('button', { type: 'button', class: fenceMode ? 'primary' : '', 'aria-pressed': !!fenceMode, onclick: () => (fenceMode ? (endFenceArea(), renderPanel()) : startFenceArea()) }, fenceMode ? '영역 끌기 취소' : '영역을 끌어서 두르기'),
+          el('button', { type: 'button', onclick: fenceWholeSite }, '학교 부지 전체 두르기')));
+    }
     if (placeTab === 'building') {
       p.append(el('button', { class: 'wide', style: 'margin-top:8px', type: 'button', 'aria-pressed': !!drawMode, onclick: () => (drawMode ? (endPolyDraw(), renderPanel()) : startPolyDraw()) }, drawMode ? '그리기 취소' : '새 건물 직접 그리기'));
     }
@@ -2385,6 +2558,20 @@ button.danger { color: var(--danger); }
         oninput: (e) => { const b = built.get(it.id); if (b.pin) b.pin.textContent = e.target.value; },
         onchange: (e) => changeItem(it, { name: e.target.value.trim() || c.label }) })));
       box_.append(numField('문 너비(m)', it.w, 6, 40, 2, (v) => changeItem(it, { w: v })));
+    }
+    if (it.kind === 'fence' || it.kind === 'enclosure') {
+      const style = fenceStyleOf(it), opts = FENCE_STYLES.map(([v, t]) => [v, t]);
+      box_.append(el('div', { class: 'cols two' },
+        field('모양', selectEl(style, opts, (v) => changeItem(it, { fenceStyle: v, fenceH: fenceDefaultH(v) }), '담장·울타리 모양')),
+        numField('높이(m)', it.fenceH || fenceDefaultH(style), .6, 4, .1, (v) => changeItem(it, { fenceH: v }))));
+      if (it.kind === 'fence') box_.append(numField('길이(m)', it.w, 2, 80, 1, (v) => changeItem(it, { w: v })));
+      else {
+        const gates = enclosureLayout(it).gates;
+        box_.append(el('div', { class: 'cols two' },
+          numField('가로(m)', it.w, 6, GROUND.w - 4, 2, (v) => changeItem(it, { w: v })),
+          numField('세로(m)', it.d, 6, GROUND.d - 4, 2, (v) => changeItem(it, { d: v }))),
+          el('p', { class: 'plan-note' }, gates.length ? `비워 둔 출입구: ${gates.join(', ')}` : '울타리 선 위(5m 안)에 정문이나 후문을 놓으면 그 자리가 자동으로 비워집니다.'));
+      }
     }
     if (it.kind === 'field') {
       const canTrack = it.d >= 30 && it.w >= 40;
@@ -3216,6 +3403,12 @@ button.danger { color: var(--danger); }
         place(x, a);
         plan.append(x);
       });
+      mergedSeams(it, f, room).forEach((q) => {
+        const seam = el('div', { class: 'plan-seam' }), across = .45, trim = .2;
+        seam.style.background = b.style.background;
+        setBox(seam, q.x0 === q.x1 ? { x0: q.x0 - across, z0: q.z0 + trim, w: across * 2, d: q.z1 - q.z0 - trim * 2 } : { x0: q.x0 + trim, z0: q.z0 - across, w: q.x1 - q.x0 - trim * 2, d: across * 2 });
+        plan.append(seam);
+      });
       if (room.type !== 'elevator' && room.type !== 'stairs') {
         const dp = doorOf(it, f, room), mark = el('div', { class: 'plan-door ' + (dp.side === 'front' || dp.side === 'back' ? 'h' : 'v') });
         mark.style.left = `${(dp.x + it.w / 2) / it.w * 100}%`;
@@ -3631,6 +3824,81 @@ button.danger { color: var(--danger); }
     const name = $('panel').querySelector('.inspector input');
     if (name) { name.focus(); name.select(); }
   }
+  const fenceLayer = new THREE.Group();
+  fenceLayer.renderOrder = 30;
+  overlay.add(fenceLayer);
+  function startFenceArea() {
+    cancelPlace();
+    fenceMode = { start: null, cur: null };
+    focus = { id: null, floor: null, room: null };
+    controls.enableRotate = false;
+    applyFocus();
+    updateSelection();
+    updateMarker();
+    stage.classList.add('placing');
+    updateHint();
+    renderPanel();
+    viewTop();
+  }
+  function endFenceArea() {
+    if (!fenceMode) return;
+    fenceMode = null;
+    disposeTree(fenceLayer);
+    controls.enableRotate = true;
+    controls.enabled = true;
+    stage.classList.remove('placing');
+    updateHint();
+  }
+  function fencePoint(e) {
+    setRay(e);
+    const p = ray.ray.intersectPlane(groundPlane, new THREE.Vector3());
+    if (!p) return null;
+    return [clamp(snap(p.x), -GROUND.w / 2 + 2, GROUND.w / 2 - 2), clamp(snap(p.z), -GROUND.d / 2 + 2, GROUND.d / 2 - 2)];
+  }
+  function drawFencePreview() {
+    disposeTree(fenceLayer);
+    if (!fenceMode || !fenceMode.start || !fenceMode.cur) return;
+    const [a, b] = [fenceMode.start, fenceMode.cur];
+    const pts = [[a[0], a[1]], [b[0], a[1]], [b[0], b[1]], [a[0], b[1]], [a[0], a[1]]].map((p) => new THREE.Vector3(p[0], .8, p[1]));
+    const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: '#d92d20', depthTest: false, transparent: true }));
+    l.renderOrder = 30;
+    fenceLayer.add(l);
+    const w = Math.abs(b[0] - a[0]), d = Math.abs(b[1] - a[1]);
+    if (w && d) {
+      const fill = new THREE.Mesh(new THREE.PlaneGeometry(w, d), new THREE.MeshBasicMaterial({ color: '#2fb58f', transparent: true, opacity: .18, depthTest: false }));
+      fill.rotation.x = -Math.PI / 2;
+      fill.position.set((a[0] + b[0]) / 2, .7, (a[1] + b[1]) / 2);
+      fill.renderOrder = 29;
+      fenceLayer.add(fill);
+    }
+  }
+  function addEnclosure(x, z, w, d) {
+    const it = makeItem('enclosure', x, z, { name: uniqueName('enclosure'), w, d, fenceStyle: fenceChoice, fenceH: fenceDefaultH(fenceChoice) });
+    project.items.push(it);
+    rebuildItem(it);
+    focus = { id: it.id, floor: null, room: null };
+    applyFocus();
+    updateSelection();
+    commit();
+    renderPanel();
+    const gates = enclosureLayout(it).gates;
+    toast(`${it.name} 설치를 마쳤습니다.${gates.length ? ` ${gates.join(', ')} 자리는 비워 두었습니다.` : ' 울타리 선 위에 정문이나 후문이 없어 끊긴 곳 없이 둘렀습니다.'}`);
+  }
+  function finishFenceArea() {
+    const a = fenceMode.start, b = fenceMode.cur, w = Math.abs(b[0] - a[0]), d = Math.abs(b[1] - a[1]);
+    if (w < 6 || d < 6) {
+      fenceMode.start = null;
+      drawFencePreview();
+      toast('가로와 세로가 6m 이상이 되도록 끌어 주세요.');
+      return;
+    }
+    endFenceArea();
+    addEnclosure((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, w, d);
+  }
+  function fenceWholeSite() {
+    endFenceArea();
+    addEnclosure(0, 0, GROUND.w - 4, GROUND.d - 4);
+  }
   function startPlace(kind) {
     cancelPlace();
     const it = makeItem(kind, 0, 0, { name: uniqueName(kind) });
@@ -3662,6 +3930,7 @@ button.danger { color: var(--danger); }
   }
   function cancelPlace() {
     endPolyDraw();
+    endFenceArea();
     if (ghost) { disposeTree(ghost); overlay.remove(ghost); ghost = null; }
     const had = !!placing;
     placing = null;
@@ -3731,6 +4000,11 @@ button.danger { color: var(--danger); }
     down = { x: e.clientX, y: e.clientY };
     tween = null;
     if (drawMode) return;
+    if (fenceMode) {
+      const p = e.button === 0 ? fencePoint(e) : null;
+      if (p) { fenceMode.start = p; fenceMode.cur = p; controls.enabled = false; }
+      return;
+    }
     if (e.button !== 0 || placing || step !== 'place') return;
     const hit = pickHit(e);
     if (!hit) return;
@@ -3746,6 +4020,10 @@ button.danger { color: var(--danger); }
   }, true);
   canvas.addEventListener('pointermove', (e) => {
     if (drawMode) { drawMode.cursor = drawPoint(e); updatePolyDraw(); return; }
+    if (fenceMode) {
+      if (fenceMode.start) { const p = fencePoint(e); if (p) { fenceMode.cur = p; drawFencePreview(); } }
+      return;
+    }
     if (placing) { moveGhost(e); return; }
     if (drag) {
       if (!drag.moved && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 5) return;
@@ -3765,6 +4043,13 @@ button.danger { color: var(--danger); }
     }
   });
   function endPointer(e) {
+    if (fenceMode) {
+      down = null;
+      controls.enabled = true;
+      if (fenceMode.start && e.type === 'pointerup') finishFenceArea();
+      else { fenceMode.start = null; drawFencePreview(); }
+      return;
+    }
     if (drawMode) {
       const wasClick = down && e.type === 'pointerup' && e.button === 0 && Math.hypot(e.clientX - down.x, e.clientY - down.y) <= 5;
       down = null;
@@ -3846,6 +4131,10 @@ button.danger { color: var(--danger); }
     const typing = /INPUT|SELECT|TEXTAREA/.test(e.target.tagName);
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !typing && !PUB) { e.preventDefault(); undo(); return; }
     if (typing || step !== 'place') return;
+    if (fenceMode) {
+      if (e.key === 'Escape') { endFenceArea(); renderPanel(); }
+      return;
+    }
     if (drawMode) {
       if (e.key === 'Escape') { endPolyDraw(); renderPanel(); }
       if (e.key === 'Enter') { e.preventDefault(); finishPolyDraw(); }
