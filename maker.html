@@ -1912,15 +1912,19 @@ button.danger { color: var(--danger); }
     }
   }
   function mergedWalls(g, it, f, room, h, wallM) {
-    const rects = roomRects(room), gg = gridOf(it);
+    const rects = roomRects(room);
     const own = (c, r) => rects.some((a) => c >= a.c && c < a.c + a.cs && r >= a.r && r < a.r + a.rs);
+    const wall = (x0, z0, w, d) => {
+      const p = toPhysRect(it, { x0, z0, w, d, x1: x0 + w, z1: z0 + d, cx: x0 + w / 2, cz: z0 + d / 2 });
+      box(g, p.w, h, p.d, wallM, p.cx, h / 2, p.cz);
+    };
     rects.forEach((a) => {
       for (let r = a.r; r < a.r + a.rs; r++) for (let c = a.c; c < a.c + a.cs; c++) {
-        const q = cellRect(it, f, { c, r, cs: 1, rs: 1 });
-        if (!own(c, r - 1)) box(g, gg.cw + .16, h, .16, wallM, q.cx, h / 2, q.z0);
-        if (!own(c, r + 1)) box(g, gg.cw + .16, h, .16, wallM, q.cx, h / 2, q.z1);
-        if (!own(c - 1, r)) box(g, .16, h, gg.ch + .16, wallM, q.x0, h / 2, q.cz);
-        if (!own(c + 1, r)) box(g, .16, h, gg.ch + .16, wallM, q.x1, h / 2, q.cz);
+        const q = logicalRect(it, f, { c, r, cs: 1, rs: 1 });
+        if (!own(c, r - 1)) wall(q.x0 - .08, q.z0 - .08, q.w + .16, .16);
+        if (!own(c, r + 1)) wall(q.x0 - .08, q.z1 - .08, q.w + .16, .16);
+        if (!own(c - 1, r)) wall(q.x0 - .08, q.z0 - .08, .16, q.d + .16);
+        if (!own(c + 1, r)) wall(q.x1 - .08, q.z0 - .08, .16, q.d + .16);
       }
     });
   }
