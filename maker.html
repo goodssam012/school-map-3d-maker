@@ -216,7 +216,8 @@ button.danger { color: var(--danger); }
     backgate: { g: 'prop', tab: 'gate', label: '후문', w: 10, d: 2, color: '#8d8173' },
     stone: { g: 'prop', label: '기념비', w: 4, d: 2, color: '#8f8f88' },
     fence: { g: 'prop', label: '울타리 (한 줄)', w: 12, d: .5, color: '#5e6a62' },
-    enclosure: { g: 'prop', tab: 'enclosure', label: '담장·울타리', w: 60, d: 40, color: '#3d7a55' }
+    enclosure: { g: 'prop', tab: 'enclosure', label: '담장·울타리', w: 60, d: 40, color: '#3d7a55' },
+    bridge: { g: 'prop', tab: 'bridge', label: '이동통로', w: 4, d: 4, color: '#9aa7ad' }
   };
   const ROOM_TYPES = [['class', '교실'], ['science', '과학실'], ['music', '음악실'], ['art', '미술실'], ['tech', '기술실'], ['home', '가사실'], ['computer', '컴퓨터실'], ['library', '도서실'], ['cafeteria', '식당'], ['sport', '체육실'], ['lab', '기타 특별실'], ['office', '사무실'], ['wc', '화장실'], ['elevator', '엘리베이터'], ['stairs', '계단'], ['etc', '기타']];
   const ROOM_TINT = { class: '#e6d6b8', science: '#cfe3dc', music: '#e8d9e6', art: '#f0e0c4', tech: '#d9d4c8', home: '#f1e3d3', computer: '#d4dde8', library: '#e3dac8', cafeteria: '#efe2c6', sport: '#dcbc8c', lab: '#c9e0d8', office: '#d8dbe8', wc: '#cfe0ea', elevator: '#c5ccd0', stairs: '#ddd5c4', etc: '#e4e1da' };
@@ -837,6 +838,7 @@ button.danger { color: var(--danger); }
   }
   function commit() {
     syncEnclosures();
+    syncBridges();
     if (history.length) stampChanges(history[history.length - 1]);
     const s = snapshot();
     if (s !== history[history.length - 1]) {
@@ -1460,6 +1462,76 @@ button.danger { color: var(--danger); }
       g.add(sub);
     }));
   }
+  function bridgeLayout(it) {
+    const A = getItem(it.a), B = getItem(it.b);
+    if (!isBuilding(A) || !isBuilding(B) || A === B) return { err: '연결할 건물 두 개를 골라 주세요.' };
+    const boxOf = (o) => { const [w, d] = footprint(o); return { x0: o.x - w / 2, x1: o.x + w / 2, z0: o.z - d / 2, z1: o.z + d / 2 }; };
+    const a = boxOf(A), b = boxOf(B), bw = it.bw || 3;
+    const ox = [Math.max(a.x0, b.x0), Math.min(a.x1, b.x1)], oz = [Math.max(a.z0, b.z0), Math.min(a.z1, b.z1)];
+    const gz = a.z1 <= b.z0 ? [a.z1, b.z0] : b.z1 <= a.z0 ? [b.z1, a.z0] : null;
+    const gx = a.x1 <= b.x0 ? [a.x1, b.x0] : b.x1 <= a.x0 ? [b.x1, a.x0] : null;
+    let lay = null;
+    const along = (o, t) => clamp(o[0] + (o[1] - o[0]) * (t === undefined ? .5 : t), o[0] + bw / 2 + .5, o[1] - bw / 2 - .5);
+    if (gz && ox[1] - ox[0] >= bw + 1) lay = { axis: 'z', cx: along(ox, it.t), cz: (gz[0] + gz[1]) / 2, len: gz[1] - gz[0] };
+    else if (gx && oz[1] - oz[0] >= bw + 1) lay = { axis: 'x', cx: (gx[0] + gx[1]) / 2, cz: along(oz, it.t), len: gx[1] - gx[0] };
+    if (!lay) return { err: gz || gx ? '두 건물이 마주 보는 폭이 좁아 연결할 수 없습니다. 건물을 나란히 놓아 주세요.' : '두 건물이 서로 마주 보도록 놓아야 연결할 수 있습니다.' };
+    if (lay.len < .8) return { err: '두 건물이 붙어 있어 이동통로가 필요 없습니다.' };
+    if (lay.len > 60) return { err: '두 건물 사이가 60m보다 멀어 연결할 수 없습니다.' };
+    const maxF = Math.min(A.floors, B.floors);
+    lay.floors = (it.floors || [0]).filter((f) => f < maxF).sort((p, q) => p - q);
+    lay.h = (A.h + B.h) / 2;
+    lay.st = styleOf(A);
+    lay.bw = bw;
+    lay.maxF = maxF;
+    return lay;
+  }
+  function buildBridge(it, g) {
+    const lay = bridgeLayout(it);
+    g.userData.bridgeFloors = [];
+    if (lay.err) return;
+    it.x = lay.cx; it.z = lay.cz; it.rot = 0;
+    it.w = lay.axis === 'x' ? lay.len : lay.bw; it.d = lay.axis === 'x' ? lay.bw : lay.len;
+    g.position.set(lay.cx, 0, lay.cz);
+    g.rotation.y = 0;
+    const L = lay.len + .3, W = lay.bw, st = lay.st;
+    const put = (p, la, h, lw, mat, u, y, v, noShadow) => (lay.axis === 'x' ? box(p, la, h, lw, mat, u, y, v, noShadow) : box(p, lw, h, la, mat, v, y, u, noShadow));
+    lay.floors.forEach((f) => {
+      const sub = new THREE.Group(), y = f * lay.h;
+      sub.userData.floor = f;
+      if (f === 0) {
+        put(sub, L, .12, W, M('#c9c3b6'), 0, .07, 0, true);
+        put(sub, L, .22, W + .5, M(st.trim), 0, 3.1, 0);
+        const n = Math.max(1, Math.round(L / 4));
+        for (let k = 0; k <= n; k++) [-1, 1].forEach((side) => put(sub, .22, 3, .22, M('#7d878b'), -L / 2 + .3 + (L - .6) * k / n, 1.5, side * (W / 2), true));
+      } else {
+        put(sub, L, .35, W + .3, M(st.wall), 0, y - .12, 0);
+        [-1, 1].forEach((side) => {
+          put(sub, L, 1, .18, M(st.wall), 0, y + .5, side * (W / 2 + .06));
+          put(sub, L, 1.55, .06, GLASS_M, 0, y + 1.78, side * (W / 2 + .06), true);
+          put(sub, L, .1, .2, M(st.trim), 0, y + 1, side * (W / 2 + .06), true);
+        });
+        put(sub, L, .3, W + .5, M(st.trim), 0, y + 2.72, 0);
+      }
+      [-1, 1].forEach((end) => put(sub, .08, 2.2, Math.min(2, W - .6), M('#3b4a50'), end * (lay.len / 2 + .02), y + 1.15, 0, true));
+      g.add(sub);
+      g.userData.bridgeFloors.push(sub);
+    });
+  }
+  let bridgeSig = null;
+  function syncBridges() {
+    const sig = buildings().map((b) => [b.id, b.x, b.z, b.rot, b.w, b.d, b.floors, b.h, JSON.stringify(b.style || {})].join()).join('|');
+    if (sig === bridgeSig) return;
+    const first = bridgeSig === null;
+    bridgeSig = sig;
+    const broken = [];
+    project.items.filter((i) => i.kind === 'bridge' && built.has(i.id)).forEach((i) => {
+      rebuildItem(i);
+      const err = bridgeLayout(i).err;
+      if (err && !i.broken && !first) broken.push(`${i.name}: ${err}`);
+      i.broken = !!err;
+    });
+    if (broken.length) toast(`${broken[0]} 이동통로는 숨겨 두었고, 다시 연결되는 자리로 옮기면 돌아옵니다.`);
+  }
   let gateSig = null;
   function syncEnclosures() {
     const sig = project.items.filter(isGate).map((gt) => [gt.x, gt.z, gt.rot, gt.w, gt.d].join()).join('|');
@@ -1539,6 +1611,9 @@ button.danger { color: var(--danger); }
         break;
       case 'enclosure':
         buildEnclosure(it, g);
+        break;
+      case 'bridge':
+        buildBridge(it, g);
         break;
     }
   }
@@ -2266,6 +2341,10 @@ button.danger { color: var(--danger); }
   function applyFocus() {
     built.forEach((b, id) => {
       const it = getItem(id);
+      if (it && it.kind === 'bridge' && b.g.userData.bridgeFloors) {
+        const f = focus.floor !== null && (focus.id === it.a || focus.id === it.b) ? focus.floor : null;
+        b.g.userData.bridgeFloors.forEach((s) => { s.visible = f === null || s.userData.floor < f; });
+      }
       if (it && isBuilding(it)) {
         const f = focus.id === id ? focus.floor : null;
         b.g.userData.floors.forEach((m, i) => { m.visible = f === null || i < f; });
@@ -2538,6 +2617,24 @@ button.danger { color: var(--danger); }
           el('button', { type: 'button', onclick: fenceWholeSite }, '학교 부지 전체 두르기')));
     }
     if (placeTab === 'building') {
+      const list = buildings();
+      p.append(el('h3', {}, '건물 사이 이동통로'),
+        el('p', { class: 'plan-note' }, '서로 마주 보는 두 건물을 고르고 연결할 층을 정하면 이동통로가 놓입니다. 1층은 지붕 있는 통로, 2층부터는 유리창이 있는 다리 모양 통로가 됩니다.'));
+      if (list.length < 2) p.append(el('p', { class: 'plan-note' }, '건물을 두 개 이상 배치하면 쓸 수 있습니다.'));
+      else {
+        const names = list.map((b) => [b.id, b.name]);
+        if (!bridgeDraft.a || !getItem(bridgeDraft.a)) bridgeDraft.a = list[0].id;
+        if (!bridgeDraft.b || !getItem(bridgeDraft.b) || bridgeDraft.b === bridgeDraft.a) bridgeDraft.b = nearestBuilding(getItem(bridgeDraft.a)) || list[1].id;
+        p.append(el('div', { class: 'cols two' },
+          field('건물 1', selectEl(bridgeDraft.a, names, (v) => { bridgeDraft.a = v; if (bridgeDraft.b === v) bridgeDraft.b = nearestBuilding(getItem(v)); renderPanel(); }, '이동통로 건물 1')),
+          field('건물 2', selectEl(bridgeDraft.b, names.filter(([id]) => id !== bridgeDraft.a), (v) => { bridgeDraft.b = v; renderPanel(); }, '이동통로 건물 2'))));
+        const draft = { a: bridgeDraft.a, b: bridgeDraft.b, floors: bridgeDraft.floors, bw: 3 }, lay = bridgeLayout(draft);
+        if (lay.err) p.append(el('p', { class: 'warn' }, lay.err));
+        else {
+          p.append(floorChecks(lay.maxF, bridgeDraft.floors, (next) => { bridgeDraft.floors = next; renderPanel(); }));
+          p.append(el('button', { class: 'wide', type: 'button', disabled: !lay.floors.length, onclick: () => addBridge() }, `이동통로 놓기 (${lay.floors.map((f) => `${f + 1}층`).join(', ') || '층을 고르세요'})`));
+        }
+      }
       p.append(el('button', { class: 'wide', style: 'margin-top:8px', type: 'button', 'aria-pressed': !!drawMode, onclick: () => (drawMode ? (endPolyDraw(), renderPanel()) : startPolyDraw()) }, drawMode ? '그리기 취소' : '새 건물 직접 그리기'));
     }
     p.append(el('h3', {}, '배치도 사진'), el('div', { class: 'actions', style: 'margin-top:0' },
@@ -2567,6 +2664,61 @@ button.danger { color: var(--danger); }
     }
     if (it) p.append(placeTab === 'gate' && isBuilding(it) ? doorEditor(it) : inspector(it));
     p.append(el('button', { class: 'primary next', type: 'button', onclick: () => setStep('rooms') }, '다음: 교실 정보'));
+  }
+  const bridgeDraft = { a: null, b: null, floors: [0] };
+  function nearestBuilding(from) {
+    if (!from) return null;
+    let best = null, dist = Infinity;
+    buildings().forEach((b) => {
+      if (b === from) return;
+      const lay = bridgeLayout({ a: from.id, b: b.id, floors: [0], bw: 3 }), d = lay.err ? Infinity : lay.len;
+      const any = Math.hypot(b.x - from.x, b.z - from.z) + 1000;
+      if (Math.min(d, any) < dist) { dist = Math.min(d, any); best = b.id; }
+    });
+    return best;
+  }
+  function floorChecks(maxF, chosen, onChange) {
+    const wrap = el('div', { class: 'chips', role: 'group', 'aria-label': '이동통로 층' });
+    for (let f = 0; f < maxF; f++) {
+      const on = chosen.includes(f);
+      wrap.append(el('button', { class: 'chip', type: 'button', 'aria-pressed': on, onclick: () => onChange(on ? chosen.filter((x) => x !== f) : chosen.concat(f).sort((p, q) => p - q)) }, `${f + 1}층`));
+    }
+    wrap.append(el('button', { class: 'chip', type: 'button', onclick: () => onChange(Array.from({ length: maxF }, (_, f) => f)) }, '모든 층'));
+    return el('div', {}, el('p', { class: 'plan-note', style: 'margin-bottom:4px' }, '연결할 층 (여러 개 고를 수 있습니다)'), wrap);
+  }
+  function addBridge() {
+    const A = getItem(bridgeDraft.a), B = getItem(bridgeDraft.b);
+    const dup = project.items.find((i) => i.kind === 'bridge' && ((i.a === A.id && i.b === B.id) || (i.a === B.id && i.b === A.id)));
+    if (dup) {
+      dup.floors = [...new Set((dup.floors || []).concat(bridgeDraft.floors))].sort((p, q) => p - q);
+      rebuildItem(dup);
+      focus = { id: dup.id, floor: null, room: null };
+      applyFocus(); updateSelection(); commit(); renderPanel();
+      toast(`${A.name}과 ${B.name} 사이 이동통로에 층을 더했습니다.`);
+      return;
+    }
+    const it = makeItem('bridge', 0, 0, { name: `${A.name}–${B.name} 이동통로`, a: A.id, b: B.id, floors: bridgeDraft.floors.slice(), bw: 3, t: .5 });
+    project.items.push(it);
+    rebuildItem(it);
+    focus = { id: it.id, floor: null, room: null };
+    applyFocus(); updateSelection(); commit(); renderPanel();
+    toast(`${A.name}과 ${B.name} 사이에 이동통로를 놓았습니다.`);
+  }
+  function bridgeEditor(box_, it) {
+    const A = getItem(it.a), B = getItem(it.b), lay = bridgeLayout(it);
+    const redo = () => { rebuildItem(it); applyFocus(); updateSelection(); commit(); renderPanel(); };
+    box_.append(el('p', {}, `${A ? A.name : '?'} ↔ ${B ? B.name : '?'}`));
+    if (lay.err) box_.append(el('p', { class: 'warn' }, `${lay.err} 건물을 옮기면 다시 나타납니다.`));
+    else {
+      box_.append(floorChecks(lay.maxF, (it.floors || []).filter((f) => f < lay.maxF), (next) => { it.floors = next; redo(); }));
+      if (!lay.floors.length) box_.append(el('p', { class: 'warn' }, '층을 하나 이상 골라 주세요.'));
+      box_.append(el('div', { class: 'cols two' },
+        numField('통로 폭(m)', it.bw || 3, 2, 8, .5, (v) => { it.bw = v; redo(); }),
+        field('위치', el('input', { type: 'range', min: 0, max: 100, step: 5, value: Math.round((it.t === undefined ? .5 : it.t) * 100), 'aria-label': '이동통로 위치',
+          oninput: (e) => { it.t = Number(e.target.value) / 100; rebuildItem(it); updateSelection(); }, onchange: () => commit() }))),
+        el('p', { class: 'plan-note' }, `길이 ${lay.len.toFixed(1)}m. 건물을 옮기면 이동통로도 따라 바뀝니다.`));
+    }
+    box_.append(el('div', { class: 'actions' }, el('button', { type: 'button', class: 'danger', onclick: () => deleteItem(it) }, '삭제')));
   }
   function changeItem(it, patch) {
     if (it.pilotis && 'floors' in patch && patch.floors < 2) { patch = Object.assign({}, patch, { floors: 2 }); toast('필로티 건물은 2층 이상이어야 합니다.'); }
@@ -2654,6 +2806,7 @@ button.danger { color: var(--danger); }
     renderPanel();
   }
   function rotateItem(it) {
+    if (it.kind === 'bridge') return;
     const rot = (it.rot + 1) % 4;
     const [x, z] = clampPos(it, it.x, it.z, rot);
     if (overlaps(it, x, z, rot)) { toast('회전하면 다른 건물과 겹칩니다. 먼저 옮겨 주세요.'); return; }
@@ -2667,6 +2820,10 @@ button.danger { color: var(--danger); }
     if (isBuilding(it) && !confirm(`'${it.name}'과 입력한 교실 정보를 삭제할까요?`)) return;
     project.items = project.items.filter((i) => i !== it);
     removeBuilt(it.id);
+    if (isBuilding(it)) project.items.filter((i) => i.kind === 'bridge' && (i.a === it.id || i.b === it.id)).forEach((i) => {
+      project.items = project.items.filter((o) => o !== i);
+      removeBuilt(i.id);
+    });
     focus = { id: null, floor: null, room: null };
     updateSelection();
     commit();
@@ -2692,6 +2849,7 @@ button.danger { color: var(--danger); }
   }
   function inspector(it) {
     const c = CAT[it.kind], box_ = el('div', { class: 'inspector' }, el('h3', { style: 'margin-top:0' }, `선택: ${c.label}`));
+    if (it.kind === 'bridge') { bridgeEditor(box_, it); return box_; }
     if (c.g !== 'prop') {
       box_.append(field('이름', el('input', { value: it.name, maxLength: 20,
         oninput: (e) => { it.name = e.target.value; const b = built.get(it.id); if (b.pin) b.pin.textContent = it.name; },
@@ -4197,6 +4355,10 @@ button.danger { color: var(--danger); }
     if (e.button !== 0 || placing || step !== 'place') return;
     const hit = pickHit(e);
     if (!hit) return;
+    if (hit.it.kind === 'bridge') {
+      if (focus.id !== hit.it.id) { focus = { id: hit.it.id, floor: null, room: null }; applyFocus(); updateSelection(); renderPanel(); }
+      return;
+    }
     const p = groundPoint(e) || hit.point;
     controls.enabled = false;
     drag = { it: hit.it, ox: p.x - hit.it.x, oz: p.z - hit.it.z, sx: hit.it.x, sz: hit.it.z, moved: false };
